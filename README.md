@@ -11,6 +11,6 @@ An overview of the tutorial, schedule, organizer information, and preliminary re
 
 <!-- MARKDOWN LINKS & IMAGES -->
 
-[Overview]: /TutorialOverview.pdf
+[Overview]: images/TutorialOverview.pdf
 [QMLOmics]: images/QMLomics_tutorial.png
 [Schedule]: images/Schedule_tutorial.png
