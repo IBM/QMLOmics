@@ -1,0 +1,15 @@
+# Dependencies
+pandas
+numpy
+matplotlib
+scipy
+seaborn
+qiskit
+qiskit-machine-learning
+torch
+pytorch_lightning
+qiskit-ibm-runtime
+qiskit-aer
+lightning
+tensorboardX
+tensorboard
