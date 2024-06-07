@@ -1,6 +1,6 @@
 # Quantum-enabled multi-omics analysis
 
-[![QMLOmics][QMLomics](#)
+[![QMLOmics][QMLomics]](#)
 
 ## Schedule
 
