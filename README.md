@@ -1,6 +1,6 @@
 # Quantum-enabled multi-omics analysis
 
-An overview of the tutorial, schedule, organizer information, and preliminary results in comparing classical and quantum machine learning methods can be found in the ![Overview](images/TutorialOverview.pdf)
+An overview of the tutorial, schedule, organizer information, and preliminary results in comparing classical and quantum machine learning methods can be found in the [Overview](images/TutorialOverview.pdf)
 
 [![QMLOmics][QMLOmics]](#)
 
