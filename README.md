@@ -9,5 +9,5 @@
 
 <!-- MARKDOWN LINKS & IMAGES -->
 
-[QMLOmics]: images/QMLOmics_tutorial.png
+[QMLOmics]: images/QMLomics_tutorial.png
 [Schedule]: images/Schedule_tutorial.png
