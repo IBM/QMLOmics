@@ -49,7 +49,8 @@ from qiskit.circuit.library import ZZFeatureMap, ZFeatureMap, PauliFeatureMap
 from qiskit import QuantumCircuit
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_algorithms.utils import algorithm_globals
-from qiskit.primitives import Sampler
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+#from qiskit.primitives import Sampler
 from qiskit_aer import AerSimulator
 from qiskit_algorithms.state_fidelities import ComputeUncompute
 from qiskit_machine_learning.kernels import FidelityQuantumKernel
