@@ -1,7 +1,6 @@
 # ISMB Tutorial
 
 ## Getting Started
-This tutorial creates a lower-dimensional embedding of the single-cell RNAseq data using a neural network. Thereafter, it applies classical and quantum machine learning algorithms on the lower-dimensional embedding and generates results. 
 
 ### Prerequisites
 1. Create the environment from the `env.txt` file:
