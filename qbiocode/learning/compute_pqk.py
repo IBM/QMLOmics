@@ -40,6 +40,11 @@ import qbiocode.utils.qutils as qutils
 
 # ====== Additional local imports ======
 from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.learning._tuning import (
+    build_search_space,
+    record_tuned_params,
+    run_function_study,
+)
 
 
 def compute_pqk(
@@ -480,3 +485,95 @@ def create_svc_model(seed):
     )
 
     return svc_model
+
+
+def compute_pqk_opt(
+    X_train,
+    X_test,
+    y_train,
+    y_test,
+    args,
+    verbose=False,
+    model="PQK",
+    data_key="",
+    encoding=None,
+    primitive=None,
+    entanglement=None,
+    reps=None,
+    *,
+    n_trials=10,
+    validation_split=0.25,
+):
+    """Tune PQK's hyperparameters with Optuna, then run it at the best ones found.
+
+    The quantum counterpart of the classical ``compute_*_opt`` functions, and driven by
+    the same ``gridsearch_pqk_args`` config block -- a list is a choice, a
+    ``{low, high}`` mapping is a range. It differs in how a candidate is scored: a
+    quantum fit builds an n-by-n fidelity kernel by circuit simulation, so scoring by
+    k-fold cross-validation would multiply an already expensive search by k. Each trial
+    is scored once, on a stratified holdout carved out of ``X_train``; the caller's test
+    set is never touched by the search.
+
+    Only reachable when the config sets both ``grid_search: True`` and
+    ``tune_quantum: True``. Tuning against a real device is refused unless
+    ``allow_hardware_tuning: True`` -- every trial would be a queued job.
+
+    Args:
+        X_train (array-like): Training data features. Split again internally to score
+            candidates; the final model is refitted on all of it.
+        X_test (array-like): Test data features, used only for the final evaluation.
+        y_train (array-like): Training data labels.
+        y_test (array-like): Test data labels.
+        args (dict): Run configuration. ``backend``, ``shots`` and ``seed`` are read
+            from it by the underlying quantum function.
+        verbose (bool): If True, prints additional information during execution.
+        model (str): Name of the model being used, default is 'PQK'.
+        data_key (str): Key for identifying the dataset.
+        encoding (list or dict): Feature-map values to search ('Z', 'ZZ', 'P'). None leaves it at the default.
+        primitive (list or dict): Qiskit primitives to search ('sampler', 'estimator'). None leaves it at the default.
+        entanglement (list or dict): Entanglement patterns to search ('linear', 'full', ...). None leaves it at the default.
+        reps (list or dict): Feature-map repetition counts to search. None leaves it at the default.
+        n_trials (int): Trial budget, default 10 -- an order of magnitude below the
+            classical default because each trial is a quantum fit. Lowered
+            automatically when the configured values describe fewer combinations.
+        validation_split (float): Fraction of the training data held out to score
+            candidates on, default 0.25.
+
+    Returns:
+        modeleval (dict): The evaluation of the model at the best hyperparameters found,
+        with the tuned values recorded in the results frame and the reported time
+        covering the whole search rather than only the final fit.
+    """
+    beg_time = time.time()
+
+    candidates = {
+        "encoding": encoding,
+        "primitive": primitive,
+        "entanglement": entanglement,
+        "reps": reps,
+    }
+
+    best_params = run_function_study(
+        compute_pqk,
+        build_search_space("pqk", candidates),
+        X_train,
+        y_train,
+        args,
+        model="pqk",
+        n_trials=n_trials,
+        seed=args.get("seed") if isinstance(args, dict) else None,
+        validation_split=validation_split,
+    )
+
+    frame = compute_pqk(
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        args,
+        model=model,
+        data_key=data_key,
+        verbose=verbose,
+        **best_params,
+    )
+    return record_tuned_params(frame, best_params, beg_time)

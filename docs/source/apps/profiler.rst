@@ -12,7 +12,7 @@ QProfiler is a comprehensive tool that goes beyond simple model evaluation. It p
    - **Data Complexity**: Computes intrinsic dataset characteristics to understand model behavior
 
 📊 **What QProfiler Does**
-   1. **Runs Multiple Models**: Evaluates classical (RF, SVM, LR, etc.) and quantum (QSVC, PQK, VQC) algorithms
+   1. **Runs Multiple Models**: Evaluates classical (RF, SVM, LR, XGBoost, CatBoost, TabPFN, etc.) and quantum (QSVC, PQK, VQC) algorithms
    2. **Analyzes Data Complexity**: Computes 15+ complexity measures before model training
    3. **Correlates Results**: Links model performance to data characteristics
    4. **Automates Workflows**: Handles data splitting, scaling, encoding, and evaluation
@@ -411,7 +411,7 @@ The ``config.yaml`` file controls all aspects of the QProfiler workflow:
    .. grid-item-card:: 🤖 Model Selection
       :class-header: bg-warning text-dark
 
-      - Classical models (SVC, RF, LR, etc.)
+      - Classical models (SVC, RF, LR, XGBoost, CatBoost, TabPFN, etc.)
       - Quantum models (QSVC, VQC, PQK)
       - Hyperparameter grids
 
@@ -537,38 +537,126 @@ Key Configuration Sections
 
 Available models:
 
-- **Classical:** ``svc``, ``dt``, ``lr``, ``nb``, ``rf``, ``mlp``
-- **Quantum:** ``qsvc``, ``vqc``, ``qnn``, ``pqk``
+- **Classical:** ``svc``, ``dt``, ``lr``, ``nb``, ``rf``, ``mlp``, ``xgb``,
+  ``catboost``, ``tabpfn``
+- **Quantum:** ``qsvc``, ``vqc``, ``qnn``, ``pqk``, ``qpl``
+
+.. list-table:: Classical learners and what each brings
+   :header-rows: 1
+   :widths: 12 26 62
+
+   * - Key
+     - Model
+     - Capabilities and caveats
+   * - ``svc``
+     - Support Vector Classifier
+     - Kernel methods (``linear``, ``rbf``, ``poly``, ``sigmoid``); scales poorly past a
+       few thousand samples.
+   * - ``dt``
+     - Decision Tree
+     - Fast, interpretable, high variance. A useful floor rather than a contender.
+   * - ``lr``
+     - Logistic Regression
+     - Linear baseline with ``l1``/``l2`` penalties; the reference point for whether a
+       dataset needs anything more.
+   * - ``nb``
+     - Gaussian Naive Bayes
+     - Effectively parameter-free (only ``var_smoothing``); strong when features really
+       are near-independent.
+   * - ``rf``
+     - Random Forest
+     - Robust default on tabular data, tolerant of irrelevant features, no scaling needed.
+   * - ``mlp``
+     - Multi-Layer Perceptron
+     - Learns feature interactions; needs scaling and the most tuning of the classical set.
+   * - ``xgb``
+     - XGBoost
+     - Gradient boosting, usually the strongest classical baseline on wide tables. On
+       macOS it needs ``libomp``; see the installation guide.
+   * - ``catboost``
+     - CatBoost
+     - Gradient boosting with symmetric trees and ordered boosting, which often behaves
+       differently from XGBoost on small, wide tables -- worth running both.
+       **Caveat:** ``subsample`` and ``bagging_temperature`` belong to incompatible
+       bootstrap schemes whose default depends on ``loss_function``; QBioCode pins the
+       scheme for you and rejects a contradictory block up front.
+   * - ``tabpfn``
+     - TabPFN (pretrained transformer)
+     - Classifies by in-context learning: the weights are frozen and pretrained on
+       synthetic tabular tasks, so there is no training and often no tuning needed --
+       frequently competitive out of the box on small datasets, which is the regime
+       QProfiler targets. **Requires** the ``[tabpfn]`` extra -- but no API key and no
+       license acceptance: QBioCode pins ``model_version: v2``, whose weights are under the
+       Prior Labs License (Apache 2.0 plus attribution). The newer ``v2.5``/``v2.6``/``v3``
+       checkpoints are **non-commercial and non-production** and are opt-in, warning when
+       selected. **Limits:** at most 10 classes (not waivable), and 50,000 rows /
+       2,000 features before accuracy degrades.
 
 .. code-block:: yaml
 
     # Run all models
-    model: ['svc', 'dt', 'lr', 'nb', 'rf', 'mlp',
+    model: ['svc', 'dt', 'lr', 'nb', 'rf', 'mlp', 'xgb', 'catboost',
             'qsvc', 'vqc', 'qnn', 'pqk']
-    
+
     # Or select specific models
     model: ['rf', 'qsvc', 'pqk']
 
+.. note::
+    ``tabpfn`` is absent from the "run all" line above on purpose. It needs an optional
+    extra and a manual license step, so a config naming it fails on a machine where
+    those have not been done:
+
+    .. code-block:: bash
+
+        pip install "qbiocode[tabpfn]"
+        # accept at https://ux.priorlabs.ai (Licenses tab), then:
+        export TABPFN_TOKEN="<your api key>"
+
+    Add ``'tabpfn'`` to ``model`` once the weights are reachable. Every other model,
+    and ``import qbiocode`` itself, works without the extra.
+
+Each classical model has an ``_opt`` twin selected by ``grid_search: True`` rather than
+by naming it in ``model``; see **Hyperparameter Configuration** below. The classical
+learners are also available as heads on a quantum projection through ``qpl``, whose
+``classical_models`` defaults to ``['rf', 'mlp', 'svc', 'lr', 'xgb', 'catboost']``.
+
 **6. Hyperparameter Configuration**
 
-Each model can have standard parameters and grid search parameters:
+Each model can have standard parameters and tuned parameters:
 
 .. code-block:: yaml
+
+    grid_search: True     # tune hyperparameters
+    tuner: optuna         # 'optuna' (default) or 'grid'
+    n_trials: 50          # Optuna's trial budget
+    cross_validation: 5
 
     # Standard parameters
     svc_args:
       C: 0.01
       gamma: 0.1
       kernel: 'linear'
-    
-    # Grid search parameters
+
+    # Tuned parameters: a list is a choice, a {low, high} mapping is a range
     gridsearch_svc_args:
-      C: [0.1, 1, 10, 100]
-      gamma: [0.001, 0.01, 0.1, 1]
+      C: {low: 0.001, high: 100, log: true}
+      gamma: {low: 0.0001, high: 1, log: true}
       kernel: ['linear', 'rbf', 'poly', 'sigmoid']
 
+``tuner: optuna`` spends ``n_trials`` fits, steered by a TPE sampler.
+``tuner: grid`` restores the exhaustive ``GridSearchCV`` sweep over every
+combination, which is what to use when reproducing a number published against it.
+Ranges need ``tuner: optuna``; under ``tuner: grid`` every entry must be a list.
+
 .. important::
-    **For quantum models:** Grid search requires generating separate config files for each parameter combination.
+    **For quantum models:** they now tune through the same ``gridsearch_<model>_args``
+    blocks, but only when ``tune_quantum: True`` is set alongside ``grid_search: True``
+    -- each trial is a quantum fit, so it is off by default. Their budget is
+    ``n_trials_quantum`` (default 10) and each candidate is scored on one stratified
+    holdout (``validation_split``) rather than on ``cross_validation`` folds. Tuning
+    against a real device is refused unless ``allow_hardware_tuning: True``.
+
+    To sweep them **exhaustively** instead, generate separate config files for each parameter combination.
     Use the :func:`qbiocode.utils.generate_qml_experiment_configs` utility function:
     
     .. code-block:: python
@@ -649,7 +737,8 @@ A complete example ``config.yaml`` is available at: `apps/qprofiler/configs/conf
     
     - Always set random seeds for reproducibility
     - Start with a small subset of models to test configuration
-    - Use grid search for classical models, separate configs for quantum models
+    - Use ``grid_search: True`` for classical models, separate configs for quantum models
+    - Leave ``tuner`` at ``optuna`` unless reproducing a pre-Optuna result
     - Monitor quantum backend availability before large runs
     - Save configurations with descriptive names for different experiments
 

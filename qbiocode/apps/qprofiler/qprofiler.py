@@ -251,6 +251,27 @@ def main(args):
     # _validate_config exists to replace, and it reported one missing key where
     # the validator reports all of them at once.
     scaler_name = _validate_config(args, log)
+
+    # Authorise TabPFN's weight download before any worker starts, if the model was asked
+    # for. The token has to reach the estimator as $TABPFN_TOKEN, and setting it here puts
+    # it in the environment that joblib's workers inherit -- doing it inside the worker
+    # would mean reading the credentials file once per model per split. Only the *source*
+    # is logged; the token itself is never written to the log, which is committed into
+    # results directories and pasted into issues.
+    if "tabpfn" in args["model"]:
+        from qbiocode.utils.tabpfn_account import load_tabpfn_token
+
+        source = load_tabpfn_token(args)
+        if source:
+            log.info(f"TabPFN token {source}")
+        else:
+            log.warning(
+                "'tabpfn' is in the model list but no API token was found, so its "
+                "pretrained weights cannot be downloaded and the model will fail. "
+                "Put the key in ~/.config/qbiocode/tabpfn.json as {\"token\": \"...\"}, "
+                "set tabpfn_json_path in the config, or export TABPFN_TOKEN."
+            )
+
     log.info(f"The number of ML methods being parallelized is {min(args['n_jobs'], len(args['model']))}")
     log.info(f"Chosen backend for quantum algorithms is: {args['backend']}")
     # Normalize path separators for cross-platform compatibility
@@ -316,14 +337,33 @@ def main(args):
         y_map = dict(zip(y_encoded.astype(str), y.tolist()))
         summary.update({'label_mapping': y_map})
         
-        # Check for binary classification
+        # Binary classification is a hard requirement, not a preference.
+        #
+        # This used to warn and continue, calling multi-class support "experimental". It is
+        # not experimental, it is absent: `modeleval` scores every model with
+        # `roc_auc_score(y_test, y_predicted)` and passes no `multi_class`, so any dataset
+        # with more than two classes raised
+        #
+        #     ValueError: multi_class must be in ('ovo', 'ovr')
+        #
+        # several hundred lines later, from inside the metrics helper, after the embeddings
+        # had been computed and the models fitted. The warning therefore bought nothing: it
+        # invited the user to proceed into a failure that was certain, and then reported it
+        # against a parameter name they had never heard of. Refusing here names the dataset,
+        # the class count, and the fact that this is a boundary rather than a bug.
         n_classes = len(np.unique(y_encoded))
         if n_classes != 2:
-            log.warning(f"Dataset {file} has {n_classes} classes. QProfiler is currently optimized for binary classification.")
-            log.warning(f"Multi-class classification support is experimental. Results may vary.")
-            print(f"\n⚠️  WARNING: Dataset '{file}' has {n_classes} classes.")
-            print(f"   QProfiler is currently optimized for binary classification.")
-            print(f"   Multi-class support is experimental. Proceed with caution.\n")
+            raise ValueError(
+                f"Dataset {file!r} has {n_classes} classes, and QProfiler supports binary "
+                f"classification only. Its label mapping is {y_map}.\n\n"
+                f"This is a boundary of the tool rather than a defect: every model is scored "
+                f"through qbiocode.evaluation.modeleval, whose AUC calculation is binary-only, "
+                f"so a multi-class run cannot produce a result no matter which models are "
+                f"selected. Continuing would fail later, after the embeddings and fits had "
+                f"already been computed.\n\n"
+                f"To proceed, either restrict the dataset to two classes (a one-vs-rest or "
+                f"one-vs-one split of the labels above), or drop it from 'file_dataset'."
+            )
 
         # call and run evaluation functions
         df_dataset = pd.DataFrame(X)

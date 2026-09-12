@@ -1,8 +1,12 @@
 # ==========================================================================
 # QBioCode -- complete development environment
 # ==========================================================================
-# Everything: core runtime + the QuVINE embedding app + the Sphinx toolchain
-# + the test/lint tooling, plus QBioCode itself in editable mode.
+# Everything: core runtime + the QuVINE embedding app + the TabPFN learner + the
+# Sphinx toolchain + the test/lint tooling, plus QBioCode itself in editable mode.
+#
+# Installing the tabpfn tier makes the model importable; it does not accept its
+# license for you, so a fit still needs TABPFN_TOKEN set once. Tests that would
+# fit it skip themselves when the weights are unreachable.
 #
 # --------------------------------------------------------------------------
 # Create the environment (Python 3.12; tested on 3.12.4)
@@ -55,6 +59,7 @@
 
 -r requirements-base.txt
 -r requirements-quvine.txt
+-r requirements-tabpfn.txt
 -r requirements-docs.txt
 
 # QBioCode itself (editable) + the [dev] extra from pyproject.toml.

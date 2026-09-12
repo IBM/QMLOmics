@@ -42,6 +42,11 @@ def modeleval(
     if verbose == True:
         print_results(model, accuracy, f1, compile_time, params)
 
+    # The tuned-parameter column is named for the branch that produced it. It used to
+    # be 'BestParams_GridSearch' back when an exhaustive grid was the only search;
+    # Optuna is now the default, so the name no longer claims an engine. Readers
+    # (qc_winner_finder, QuantumSage) accept the old name too, because every
+    # ModelResults.csv written before this change carries it.
     if args["grid_search"] == True:
         return pd.DataFrame(
             {
@@ -55,7 +60,7 @@ def modeleval(
                         "f1_score": f1,
                         "time": compile_time,
                         "auc": auc,
-                        "BestParams_GridSearch": params,
+                        "BestParams_Tuned": params,
                     }
                 ],
             }

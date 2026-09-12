@@ -44,22 +44,47 @@ from .conftest import REPO_ROOT, subprocess_env
 import nbclient
 import nbformat
 
-# Verified to execute end to end offline, with timings measured on a laptop:
-#   example_data_generation  ~20 s
-#   example_quvine           ~7.5 min
+# Timings measured on a laptop:
+#   example_data_generation  ~20 s   (offline)
+#   example_quvine           ~7.5 min (offline)
+#   catboost_and_tabpfn      ~20 s   (needs the [tabpfn] extra and, on a machine with no
+#                                     cached checkpoint, network access to download it)
 # Notebooks needing anndata/scanpy or a real quantum backend are deliberately
 # absent: they cannot run in a bare CI environment.
 NOTEBOOKS = [
     "tutorial/Artificial_data_generation/example_data_generation.ipynb",
     "tutorial/QuVINE/example_quvine.ipynb",
+    # Compares the two tuning engines and exercises the quantum tuning path, so it is
+    # the end-to-end guard for both: a change that breaks either shows up here.
+    "tutorial/Hyperparameter_Tuning/optuna_vs_gridsearch.ipynb",
+    # The two learners added alongside XGBoost, and the only notebook exercising the
+    # CatBoost bootstrap guard. It fits TabPFN for real rather than degrading, which is the
+    # point -- the pinned v2 weights need no token -- so unlike the others it is NOT
+    # runnable without the optional extra, and is skipped when that is absent. See
+    # NOTEBOOKS_NEEDING_TABPFN below.
+    "tutorial/CatBoost_and_TabPFN/catboost_and_tabpfn.ipynb",
 ]
+
+#: Notebooks that fit TabPFN unconditionally, and so require the [tabpfn] extra.
+#:
+#: This mattered as soon as the notebook stopped degrading gracefully: before the v2 pin its
+#: TabPFN cell caught ImportError and printed an explanation, so it executed with or without
+#: the extra. Now it fits for real, and a bare-install run of `pytest -m slow` would *fail*
+#: rather than skip. CI does not currently reach it -- the default `addopts` excludes `slow`
+#: -- so nothing would have caught this until someone ran the slow tier by hand.
+NOTEBOOKS_NEEDING_TABPFN = frozenset(
+    {"tutorial/CatBoost_and_TabPFN/catboost_and_tabpfn.ipynb"}
+)
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("relative_path", NOTEBOOKS)
-def test_the_notebook_executes(relative_path, tmp_path, monkeypatch):
+def test_the_notebook_executes(relative_path, tmp_path, monkeypatch, tabpfn_skip_reason):
     from nbclient import NotebookClient
     from nbclient.exceptions import CellExecutionError
+
+    if relative_path in NOTEBOOKS_NEEDING_TABPFN and tabpfn_skip_reason is not None:
+        pytest.skip(tabpfn_skip_reason)
 
     notebook_path = REPO_ROOT / relative_path
     assert notebook_path.is_file(), f"{relative_path} is listed but missing"

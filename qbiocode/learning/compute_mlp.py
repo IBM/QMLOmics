@@ -9,6 +9,7 @@ from sklearn.neural_network import MLPClassifier
 
 # ====== Additional local imports ======
 from qbiocode.learning._grid import build_param_grid
+from qbiocode.learning._tuning import build_search_space, run_study
 from qbiocode.evaluation.model_evaluation import modeleval
 
 # ====== Scikit-learn imports ======
@@ -145,14 +146,19 @@ def compute_mlp_opt(
     alpha=None,
     learning_rate=None,
     random_state=None,
+    *,
+    tuner="optuna",
+    n_trials=50,
 ):
     """
     This function also generates a model using a Multi-layer Perceptron (mlp), a neural network, as implemented in scikit-learn
     (https://scikit-learn.org/stable/modules/generated/sklearn.neural_network.MLPClassifier.html). The difference here is that
-    this function runs a grid search. The range of the grid search for each parameter is specified in the config.yaml file. The
+    this function tunes the model's hyperparameters.
+    The values or ranges searched for each parameter are specified in the config.yaml file,
+    and ``tuner`` selects the search engine (Optuna by default). The
     combination of parameters that led to the best performance is saved and returned as best_params, which can then be used on similar
-    datasets, without having to run the grid search.  The model is trained on the training dataset and validated on the test dataset. The function returns the evaluation of the model
-    on the test dataset, including accuracy, AUC, F1 score, and the time taken to train and validate the model across the grid search.
+    datasets, without having to repeat the search.  The model is trained on the training dataset and validated on the test dataset. The function returns the evaluation of the model
+    on the test dataset, including accuracy, AUC, F1 score, and the time taken to train and validate the model across the search.
     This function is designed to be used in a supervised learning context, where the goal is to classify data points.
 
     Args:
@@ -171,33 +177,55 @@ def compute_mlp_opt(
             alpha (float or list): L2 penalty (regularization term) parameter.
             learning_rate (str or list): Learning rate schedule for weight updates.
             random_state (int or None): Seed for the estimator's own randomness. QProfiler fills this in from the run's ``seed`` so two runs at one seed agree; None leaves the estimator drawing from the global RNG.
+        tuner (str): Which search to run. ``'optuna'`` (default) spends ``n_trials`` on
+            Optuna's TPE sampler, which also allows a hyperparameter to be given as a
+            ``{low, high}`` range rather than a list. ``'grid'`` restores the exhaustive
+            ``GridSearchCV`` sweep over every combination.
+        n_trials (int): Trial budget when ``tuner='optuna'``, default is 50. Lowered
+            automatically when the configured values describe fewer distinct
+            combinations than that, so a small block does not re-evaluate the same
+            models.
     Returns:
             modeleval (dict): A dictionary containing the evaluation metrics of the model on the test dataset, including accuracy, AUC, F1 score,
-                      and the time taken to train and validate the model, along with the best parameters found during grid search.
+                      and the time taken to train and validate the model, along with the best parameters found during the search.
     """
 
     beg_time = time.time()
     # Only the hyperparameters actually supplied. Passing all of them meant a
     # config that named a subset died in sklearn on the first one it left at its
     # `[]` default; see qbiocode.learning._grid.
-    params = build_param_grid(
-        "mlp",
-        {
-            "hidden_layer_sizes": hidden_layer_sizes,
-            "activation": activation,
-            "max_iter": max_iter,
-            "solver": solver,
-            "alpha": alpha,
-            "learning_rate": learning_rate,
-        },
-    )
+    candidates = {
+        "hidden_layer_sizes": hidden_layer_sizes,
+        "activation": activation,
+        "max_iter": max_iter,
+        "solver": solver,
+        "alpha": alpha,
+        "learning_rate": learning_rate,
+    }
 
-    # Pemlporm Grid Search to find the best parameters
-    grid_search = GridSearchCV(MLPClassifier(random_state=random_state), param_grid=params, cv=cv)
-    grid_search.fit(X_train, y_train)
-
-    # Get the best parameters and use them to create the final model
-    best_params = grid_search.best_params_
+    # Optuna by default; the exhaustive grid stays reachable so a number published
+    # against it can still be reproduced. Both engines are handed the same
+    # `candidates`, so switching `tuner` never changes *which* hyperparameters are
+    # searched -- only how the search spends its fits.
+    if tuner == "grid":
+        search = GridSearchCV(
+            MLPClassifier(random_state=random_state),
+            param_grid=build_param_grid("mlp", candidates),
+            cv=cv,
+        )
+        search.fit(X_train, y_train)
+        best_params = search.best_params_
+    else:
+        best_params = run_study(
+            MLPClassifier,
+            build_search_space("mlp", candidates),
+            X_train,
+            y_train,
+            cv=cv,
+            n_trials=n_trials,
+            seed=random_state,
+            fixed={"random_state": random_state},
+        )
     best_mlp = MLPClassifier(**best_params, random_state=random_state)
     best_mlp.fit(X_train, y_train)
 

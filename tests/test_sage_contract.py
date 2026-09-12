@@ -86,7 +86,12 @@ def results_table(parameter_column="Model_Parameters", n_datasets=6):
     return frame
 
 
-@pytest.mark.parametrize("parameter_column", ["Model_Parameters", "BestParams_GridSearch"])
+@pytest.mark.parametrize(
+    "parameter_column",
+    # 'BestParams_GridSearch' is the pre-Optuna name for the tuned column; older
+    # ModelResults.csv files still carry it, so QuantumSage must still read them.
+    ["Model_Parameters", "BestParams_Tuned", "BestParams_GridSearch"],
+)
 def test_it_accepts_whichever_parameter_column_qprofiler_wrote(parameter_column):
     """QProfiler writes one or the other; requiring both rejected every real table."""
     sage = _sage.QuantumSage(data_input=results_table(parameter_column))

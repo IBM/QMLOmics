@@ -5,6 +5,34 @@ import os
 
 from qiskit_ibm_runtime import QiskitRuntimeService
 
+#: Credential keys whose value must never be printed, logged or written to a results
+#: directory. ``get_creds`` reads the token out of ``~/.qiskit/qiskit-ibm.json`` -- a file
+#: the user deliberately keeps outside the repository -- so echoing it to stdout moves a
+#: secret from a protected location into an unprotected one. That mattered here in
+#: particular because the tutorial notebooks are committed *with their outputs* and
+#: published, so one notebook calling this function would put a live API token on a public
+#: page. See qbiocode.utils.tabpfn_account for the same principle applied from the start.
+_SECRET_KEYS = frozenset({"token"})
+
+
+def redacted(creds):
+    """A copy of a credentials dict that is safe to print.
+
+    The secret values are replaced with a marker rather than dropped: whether a token was
+    found is the useful half of the diagnostic -- "did it pick up my credentials?" -- and
+    it can be answered without disclosing the value.
+
+    Args:
+        creds (dict): Credentials as assembled by :func:`get_creds`.
+
+    Returns:
+        dict: The same keys, with every secret value replaced by ``'<redacted>'``.
+    """
+    return {
+        key: ("<redacted>" if key in _SECRET_KEYS and value else value)
+        for key, value in creds.items()
+    }
+
 
 def get_creds(args):
     """This function determines the user's IBM Quantum channel, instance, and token, using values provided
@@ -62,7 +90,9 @@ def get_creds(args):
             print(
                 "IBM credentials not found! Please verify that the path to your qiskit-ibm.json file is correct."
             )
-    print(rval)
+    # Redacted, not raw: `rval` carries the API token, and this print used to put it on
+    # stdout on every call. See `redacted` above for why that is worse than it looks.
+    print(redacted(rval))
     return rval
 
 

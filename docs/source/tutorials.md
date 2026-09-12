@@ -273,6 +273,53 @@ If you encounter any issues or have questions about the tutorials:
 - Review the [Contributing Guide](https://github.com/qiskit-community/QBioCode/blob/main/CONTRIBUTING.md)
 - Consult the API documentation for detailed function references
 
+---
+
+### 8. Hyperparameter Tuning - Optuna vs Grid Search
+
+Learn how QBioCode tunes hyperparameters, and what changed when Optuna replaced the exhaustive grid as the default. This tutorial times the two searches against each other on the shipped configuration blocks, then tunes a quantum classifier.
+
+<a href="tutorials/Hyperparameter_Tuning/optuna_vs_gridsearch.html">📓 <strong>View Tutorial Notebook</strong></a>
+
+**What You'll Learn:**
+- Why the shipped `gridsearch_rf_args` block costs 2,880 fits at `cross_validation: 5`
+- Run the same configuration under `tuner: grid` and `tuner: optuna`, timed side by side
+- Write a hyperparameter as a continuous `{low, high, log}` range instead of a list of decades
+- Recognise the error you get when a range meets `tuner: grid`
+- Tune a quantum classifier (`qsvc`) with `tune_quantum: True`
+- Budget a quantum search: why `n_trials_quantum` defaults to 10, not 50
+
+**Key Concepts:**
+- TPE sampling against exhaustive enumeration: fixed budget versus fixed grid
+- Categorical choices and continuous ranges in one configuration block
+- Why quantum candidates are scored on one holdout rather than k folds
+- Reproducing a pre-Optuna result with `tuner: grid`
+- The hardware guard: why tuning on a real device is refused by default
+
+---
+
+### 9. CatBoost and TabPFN - Two New Classical Learners
+
+Run the two classical learners added alongside XGBoost, and see the three ways they differ from the scikit-learn estimators around them. CatBoost is a core dependency and works everywhere; TabPFN is a pretrained transformer behind an optional extra, and this tutorial degrades gracefully when its weights are unavailable rather than failing.
+
+<a href="tutorials/CatBoost_and_TabPFN/catboost_and_tabpfn.html">📓 <strong>View Tutorial Notebook</strong></a>
+
+**What You'll Learn:**
+- Run `catboost` beside `xgb` and `rf`, untuned and then tuned with Optuna
+- Why two boosters are worth running rather than picking one in advance
+- Recognise the one real trap in CatBoost's hyperparameter surface: `subsample` and `bagging_temperature` belong to incompatible bootstrap schemes
+- See why that conflict is reachable on *binary* data through `loss_function`, not only by adding classes
+- Measure a hyperparameter that silently does nothing (`min_data_in_leaf` at the default grow policy)
+- Understand what TabPFN actually needs to run: neither a GPU nor an API key
+- See why the pinned model version is a licensing decision, not just a modelling one: `v2`'s weights permit commercial use, `v2.5`/`v2.6`/`v3` are non-commercial
+
+**Key Concepts:**
+- Gradient boosting variants: symmetric trees and ordered boosting against XGBoost's level-wise growth
+- In-context learning: a frozen pretrained model whose `fit` only memorises rows, so no hyperparameter changes its capacity
+- Configuration validity that depends on a derived default rather than on what you wrote
+- Optional extras with a manual gate, and why such a model cannot be a base dependency
+- TabPFN's fixed ceilings: 10 classes (unwaivable), 50,000 rows, 2,000 features
+
 ```{toctree}
 :hidden:
 :maxdepth: 1
@@ -289,4 +336,6 @@ Quantum Ensemble Learning <tutorials/QEnsemble/QEnsemble_example_blobs>
 QSage <tutorials/QSage/qsage>
 Quantum Projection Learning <tutorials/Quantum_Projection_Learning/QPL_example>
 PQK on Ovarian Cancer <tutorials/PQK - OV>
+Hyperparameter Tuning: Optuna vs Grid Search <tutorials/Hyperparameter_Tuning/optuna_vs_gridsearch>
+CatBoost and TabPFN <tutorials/CatBoost_and_TabPFN/catboost_and_tabpfn>
 ```

@@ -30,19 +30,28 @@ def qml_winner(results_df, rawevals_df, output_dir, tag):
     # pull in the raw evaluations
     rawevals = rawevals_df.copy()
     # first, compute mean across all splits
-    if "Model_Parameters" in df.columns:
-        df_across_split = (
-            df.groupby(["Dataset", "embeddings", "model", "Model_Parameters"])["f1_score"]
-            .mean()
-            .reset_index()
+    # model_evaluation.py writes exactly one parameter column, named for the branch
+    # that produced it: 'Model_Parameters' with tuning off, 'BestParams_Tuned' with it
+    # on -- or 'BestParams_GridSearch', the name that branch used before Optuna
+    # replaced the exhaustive grid, which every older ModelResults.csv still carries.
+    # The previous if/else assumed the absence of one meant the presence of the other,
+    # so any third name became a KeyError raised from inside groupby.
+    parameter_columns = [
+        name for name in ("Model_Parameters", "BestParams_Tuned", "BestParams_GridSearch")
+        if name in df.columns
+    ]
+    if not parameter_columns:
+        raise ValueError(
+            "None of the model-parameter columns ('Model_Parameters', "
+            "'BestParams_Tuned', 'BestParams_GridSearch') are present in the results "
+            f"table, which has {sorted(df.columns)}. Pass the ModelResults.csv written "
+            "by QProfiler."
         )
-    else:
-        # if 'Model_Parameters' is not present, this means you ran a grid search and this column will be named 'BestParams_GridSearch' instead
-        df_across_split = (
-            df.groupby(["Dataset", "embeddings", "model", "BestParams_GridSearch"])["f1_score"]
-            .mean()
-            .reset_index()
-        )
+    df_across_split = (
+        df.groupby(["Dataset", "embeddings", "model", parameter_columns[0]])["f1_score"]
+        .mean()
+        .reset_index()
+    )
     # now, extract the best results per method across embedding and iteration
     df_best = df_across_split.groupby(["Dataset", "model"])["f1_score"].max().reset_index()
     # df_best = df_across_split.groupby(['Dataset', 'model', 'Model_Parameters'])['f1_score'].max().reset_index()

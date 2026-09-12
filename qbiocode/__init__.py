@@ -81,6 +81,7 @@ from .evaluation.model_run import model_run
 
 # ====== Import learning functions ======
 from .learning.compute_dt import compute_dt, compute_dt_opt
+from .learning.compute_catboost import compute_catboost, compute_catboost_opt
 from .learning.compute_lr import compute_lr, compute_lr_opt
 from .learning.compute_mlp import compute_mlp, compute_mlp_opt
 from .learning.compute_nb import compute_nb, compute_nb_opt
@@ -98,6 +99,13 @@ from .learning.compute_vqc import compute_vqc
 # "'NoneType' object is not callable" and would additionally hide a genuine
 # breakage in the module (a typo, a broken sibling import) as a missing extra.
 from .learning.compute_xgb import compute_xgb, compute_xgb_opt
+
+# TabPFN is an optional extra ([tabpfn]) and its module imports `tabpfn` lazily, so
+# this import costs nothing when the extra is absent and -- importantly -- does not
+# pull torch in, which would undo preload_openmp_libraries() above. Both functions
+# raise an actionable ImportError naming the extra and the license step when called
+# without it.
+from .learning.compute_tabpfn import compute_tabpfn, compute_tabpfn_opt
 
 # ====== Import helper functions ======
 from .utils.dataset_checkpoint import checkpoint_restart
@@ -121,6 +129,8 @@ __all__ = [
     # Version
     "__version__",
     # Classical ML algorithms
+    "compute_catboost",
+    "compute_catboost_opt",
     "compute_svc",
     "compute_svc_opt",
     "compute_dt",
@@ -133,6 +143,8 @@ __all__ = [
     "compute_rf_opt",
     "compute_xgb",
     "compute_xgb_opt",
+    "compute_tabpfn",
+    "compute_tabpfn_opt",
     "compute_mlp",
     "compute_mlp_opt",
     # Quantum ML algorithms

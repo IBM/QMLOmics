@@ -48,7 +48,7 @@ QSage implements a meta-learning approach using regression models to predict per
       **Process:** Train sub-sages for each model
       
       - One predictor per model per metric
-      - Random Forest or MLP regressor
+      - Random Forest, MLP, XGBoost or CatBoost regressor
       - Cross-validated hyperparameter tuning
 
    .. grid-item-card:: 🔮 Prediction Phase
@@ -146,7 +146,10 @@ This trains QSage on historical QProfiler data and generates predictions for all
 **Optional Arguments:**
 
 - ``--seed, -s``: Random seed for reproducibility (default: 42)
-- ``--model-type``: Type of sub-sage model to train: ``rf`` (Random Forest) or ``mlp`` (MLP). Default: ``random_forest``. **Only one type can be trained per run.**
+- ``--model-type``: Type of sub-sage model to train: ``rf`` (Random Forest), ``mlp`` (MLP),
+  ``xgboost``/``xgboost_optuna`` (XGBoost tuned with Optuna) or ``catboost``/``catboost_optuna``
+  (CatBoost tuned with Optuna). Default: ``random_forest``. **Only one type can be trained
+  per run.**
 - ``--test-size``: Proportion of data to use for testing (default: 0.2)
 
 **Examples**
@@ -292,7 +295,8 @@ Configuration Options
 
    sage.train_sub_sages(
        test_size=0.2,           # Train/test split ratio
-       sage_type='random_forest' # 'random_forest' or 'mlp'
+       sage_type='random_forest' # 'random_forest', 'mlp',
+                                 # 'xgboost_optuna' or 'catboost_optuna'
    )
 
 **Prediction Parameters**
@@ -308,8 +312,9 @@ Configuration Options
 
 QSage can predict performance for:
 
-- **Classical:** SVC, Decision Tree, Logistic Regression, Naive Bayes, Random Forest, MLP
-- **Quantum:** QSVC, VQC, QNN, PQK
+- **Classical:** SVC, Decision Tree, Logistic Regression, Naive Bayes, Random Forest, MLP,
+  XGBoost, CatBoost, TabPFN
+- **Quantum:** QSVC, VQC, QNN, PQK, QPL
 
 Understanding Predictions
 -------------------------
@@ -370,6 +375,11 @@ Best Practices
 
 - **Random Forest** (default): Better for non-linear relationships, more robust
 - **MLP**: Can capture complex patterns, requires more data
+- **XGBoost-Optuna**: Gradient boosting with a Bayesian hyperparameter search; usually the
+  strongest on continuous targets
+- **CatBoost-Optuna**: The same idea with a different booster. On the small, wide tables
+  QProfiler produces the two often disagree, so it is worth training both and comparing the
+  reported R-squared rather than assuming either wins
 
 **Prediction Confidence**
 
@@ -421,7 +431,7 @@ For each model :math:`M` and metric :math:`m`:
 
 where:
    - :math:`\mathbf{x}_{\text{complexity}}` = 23-dimensional complexity feature vector
-   - :math:`f_{\theta}` = Random Forest or MLP regressor
+   - :math:`f_{\theta}` = Random Forest, MLP, XGBoost or CatBoost regressor
    - :math:`\hat{y}_{M,m}` = Predicted performance metric
 
 **Confidence-Weighted Ranking**

@@ -8,12 +8,15 @@ optimized versions (where applicable) with hyperparameter tuning.
 
 Classical Algorithms
 --------------------
+- CatBoost (catboost)
 - Decision Tree (DT)
 - Logistic Regression (LR)
 - Multi-Layer Perceptron (MLP)
 - Naive Bayes (NB)
 - Random Forest (RF)
 - Support Vector Classifier (SVC)
+- TabPFN (tabpfn) -- pretrained tabular transformer; needs the [tabpfn] extra.
+  Pinned to model_version 'v2', the version whose weights permit commercial use.
 - XGBoost (XGB)
 
 Quantum Algorithms
@@ -39,6 +42,7 @@ Usage
 """
 
 # Classical ML algorithms
+from .compute_catboost import compute_catboost, compute_catboost_opt
 from .compute_dt import compute_dt, compute_dt_opt
 from .compute_lr import compute_lr, compute_lr_opt
 from .compute_mlp import compute_mlp, compute_mlp_opt
@@ -54,18 +58,26 @@ from .compute_svc import compute_svc, compute_svc_opt
 # breakage in the module (a typo, a broken sibling import) as a missing extra.
 from .compute_xgb import compute_xgb, compute_xgb_opt
 
-from .compute_pqk import compute_pqk
-from .compute_qpl import compute_qpl
+# compute_tabpfn.py imports `tabpfn` lazily, inside its functions, so this line
+# neither requires the optional [tabpfn] extra nor maps torch's OpenMP runtime into
+# the process -- both of which a module-level `from tabpfn import ...` would do. See
+# that module's docstring and tests/test_openmp_import_order.py.
+from .compute_tabpfn import compute_tabpfn, compute_tabpfn_opt
+
+from .compute_pqk import compute_pqk, compute_pqk_opt
+from .compute_qpl import compute_qpl, compute_qpl_opt
 
 # Quantum ML algorithms
-from .compute_pqk import compute_pqk
+from .compute_pqk import compute_pqk, compute_pqk_opt
 from .compute_qensemble import compute_qensemble
-from .compute_qnn import compute_qnn
-from .compute_qsvc import compute_qsvc
-from .compute_vqc import compute_vqc
+from .compute_qnn import compute_qnn, compute_qnn_opt
+from .compute_qsvc import compute_qsvc, compute_qsvc_opt
+from .compute_vqc import compute_vqc, compute_vqc_opt
 
 __all__ = [
     # Classical algorithms
+    "compute_catboost",
+    "compute_catboost_opt",
     "compute_dt",
     "compute_dt_opt",
     "compute_lr",
@@ -78,14 +90,21 @@ __all__ = [
     "compute_rf_opt",
     "compute_svc",
     "compute_svc_opt",
+    "compute_tabpfn",
+    "compute_tabpfn_opt",
     "compute_xgb",
     "compute_xgb_opt",
     # Quantum algorithms
     'compute_qnn',
+    'compute_qnn_opt',
     'compute_qsvc',
+    'compute_qsvc_opt',
     'compute_vqc',
+    'compute_vqc_opt',
     'compute_pqk',
+    'compute_pqk_opt',
     'compute_qpl',
+    'compute_qpl_opt',
     'compute_qensemble',
 ]
 

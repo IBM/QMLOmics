@@ -259,13 +259,14 @@ Specify which machine learning models to evaluate.
 **All Models:**
 
 ```yaml
-model: ['svc', 'dt', 'lr', 'nb', 'rf', 'mlp', 'xgb', 'qsvc', 'vqc', 'qnn', 'pqk']
+model: ['svc', 'dt', 'lr', 'nb', 'rf', 'mlp', 'xgb', 'catboost', 'tabpfn',
+        'qsvc', 'vqc', 'qnn', 'pqk']
 ```
 
 **Classical Models Only:**
 
 ```yaml
-model: ['rf', 'svc', 'lr', 'mlp', 'xgb']
+model: ['rf', 'svc', 'lr', 'mlp', 'xgb', 'catboost']
 ```
 
 **Quantum Models Only:**
@@ -285,6 +286,8 @@ model: ['qsvc', 'vqc', 'qnn', 'pqk']
 | `rf` | Classical | Random Forest |
 | `mlp` | Classical | Multi-Layer Perceptron |
 | `xgb` | Classical | XGBoost |
+| `catboost` | Classical | CatBoost gradient boosting |
+| `tabpfn` | Classical | TabPFN pretrained tabular transformer (needs the `[tabpfn]` extra) |
 | `qsvc` | Quantum | Quantum Support Vector Classifier |
 | `vqc` | Quantum | Variational Quantum Classifier |
 | `qnn` | Quantum | Quantum Neural Network |
@@ -294,7 +297,137 @@ model: ['qsvc', 'vqc', 'qnn', 'pqk']
 
 Configure hyperparameters for each model. Each model has:
 - **Standard arguments**: Single values for quick runs
-- **Grid search arguments**: Lists of values for hyperparameter tuning
+- **Tuned arguments** (`gridsearch_<model>_args`): what to search when `grid_search: True`
+
+A tuned argument may be written two ways:
+
+| Syntax | Meaning |
+|---|---|
+| `C: [0.1, 1, 10]` | a list -- one of these values is chosen |
+| `C: {low: 0.001, high: 100}` | a range -- sampled continuously |
+| `C: {low: 0.001, high: 100, log: true}` | as above, on a log scale |
+| `n_estimators: {low: 10, high: 500}` | integer bounds give integer values |
+
+Two keys control the search itself:
+
+```yaml
+grid_search: True    # tune hyperparameters at all
+tuner: optuna        # 'optuna' (default) or 'grid'
+n_trials: 50         # Optuna's trial budget
+cross_validation: 5  # folds used to score each candidate
+```
+
+`tuner: optuna` spends `n_trials` fits, steering them with a TPE sampler toward the
+region that has been scoring well. `tuner: grid` restores the exhaustive
+`GridSearchCV` sweep, which fits *every* combination -- the `gridsearch_rf_args`
+block below is 576 combinations, or 2,880 fits at `cross_validation: 5`. Ranges
+require `tuner: optuna`; under `tuner: grid` every entry must be a list.
+
+#### Tuning the quantum models
+
+The quantum classifiers (`qsvc`, `vqc`, `qnn`, `pqk`, `qpl`) tune through the same
+`gridsearch_<model>_args` blocks, but tuning them is **off by default** and needs a
+second key:
+
+```yaml
+grid_search: True        # tune at all
+tune_quantum: True       # ... including the quantum models
+n_trials_quantum: 10     # their budget: smaller, because each trial is a quantum fit
+validation_split: 0.25   # holdout fraction used to score a quantum candidate
+```
+
+Two differences from the classical path, both driven by cost -- a quantum fit builds an
+n-by-n fidelity kernel by circuit simulation, seconds rather than milliseconds:
+
+- Each candidate is scored **once**, on a stratified holdout carved out of the training
+  data, rather than on `cross_validation` folds. The test set is never touched by the
+  search.
+- `n_trials_quantum` defaults to 10 rather than 50.
+
+Every quantum model named in `model` needs its own `gridsearch_<model>_args` block when
+`tune_quantum` is on; a model with nothing to search is reported by name rather than
+silently skipped. The five blocks, as shipped:
+
+```yaml
+gridsearch_qsvc_args:
+  encoding:     ['Z', 'ZZ']
+  reps:         [1, 2]
+  entanglement: ['linear', 'full']
+  C:            {low: 1.0e-2, high: 1.0e+2, log: true}
+
+gridsearch_vqc_args:
+  encoding:        ['Z', 'ZZ']
+  reps:            [1, 2]
+  ansatz_type:     ['amp']
+  local_optimizer: ['COBYLA', 'L_BFGS_B']
+  maxiter:         {low: 50, high: 200}
+
+gridsearch_qnn_args:    # same keys as vqc
+  encoding:        ['Z', 'ZZ']
+  reps:            [1, 2]
+  ansatz_type:     ['amp']
+  local_optimizer: ['COBYLA', 'L_BFGS_B']
+  maxiter:         {low: 50, high: 200}
+
+gridsearch_pqk_args:
+  encoding:     ['Z', 'ZZ']
+  reps:         [1, 2]
+  entanglement: ['linear', 'full']
+
+gridsearch_qpl_args:    # same keys as pqk
+  encoding:     ['Z', 'ZZ']
+  reps:         [1, 2]
+  entanglement: ['linear', 'full']
+```
+
+What is tunable per model:
+
+| Model | Tunable |
+|---|---|
+| `qsvc` | `encoding`, `entanglement`, `reps`, `primitive`, `C`, `gamma`, `pegasos` |
+| `vqc`, `qnn` | `encoding`, `entanglement`, `reps`, `primitive`, `ansatz_type`, `local_optimizer`, `maxiter` |
+| `pqk`, `qpl` | `encoding`, `entanglement`, `reps`, `primitive` |
+
+There is no `n_qubits`: the qubit count follows from the width of the data reaching the
+model, so it is set by the embedding's `n_components`, not by tuning.
+
+**Tuning on real hardware is refused** unless you also set `allow_hardware_tuning: True`.
+Every trial is a separate queued job billed against your instance, and the failure mode
+is silent -- the run simply never appears to finish. Tune on `backend: simulator`, then
+run the winning configuration on the device.
+
+`tune_quantum` without `grid_search` is an error rather than a no-op. `tuner: grid` only
+ever applies to the classical models -- a quantum candidate is scored by running the whole
+model, so there is no exhaustive-grid engine for one; setting both warns and still uses
+Optuna for the quantum models.
+
+QPL is scored on the **mean** accuracy across the classical heads it fits on the quantum
+projection, which is what tuning the projection is meant to improve. Taking the best head
+instead would let one lucky head choose the projection, and every head is reported anyway.
+
+#### Projection caches
+
+`pqk` and `qpl` cache their projected feature matrices so a rerun does not recompute
+circuits. The file name includes a fingerprint of the settings that change the circuit
+(`encoding`, `entanglement`, `reps`, `primitive`, feature width), and the row count is
+checked on load. Redirect either cache if you want throwaway projections kept apart from
+your real ones:
+
+```yaml
+pqk_projection_dir: pqk_projections   # default, relative to the working directory
+qpl_projection_dir: qpl_projections   # default
+```
+
+Tuning does this automatically: every trial writes to a temporary directory that is
+deleted when the search ends, so trial projections never collide with the final run's.
+
+#### The results column
+
+With tuning on, `ModelResults.csv` records the chosen hyperparameters in a
+**`BestParams_Tuned`** column; with tuning off it records `Model_Parameters` instead,
+never both. `BestParams_Tuned` was called `BestParams_GridSearch` before Optuna became
+the default engine, and every reader (`qbiocode.utils.qc_winner_finder`, `QuantumSage`)
+still accepts the old name, so results files written earlier keep working.
 
 **Example: Support Vector Classifier (SVC)**
 
@@ -305,10 +438,10 @@ svc_args:
   gamma: 0.1
   kernel: 'rbf'
 
-# Grid search over parameter combinations
+# Tuned: lists and ranges may be mixed freely
 gridsearch_svc_args:
-  C: [0.1, 1, 10, 100]
-  gamma: [0.001, 0.01, 0.1, 1]
+  C: {low: 0.001, high: 100, log: true}
+  gamma: {low: 0.0001, high: 1, log: true}
   kernel: ['linear', 'rbf', 'poly', 'sigmoid']
 ```
 
@@ -340,11 +473,177 @@ gridsearch_xgb_args:
   max_depth: [3, 6, 9]
 ```
 
+**Example: CatBoost**
+
+Any parameter you leave out stays at CatBoost's own default. That is not the same as
+writing the documented default in: CatBoost *derives* several defaults from the data and
+from each other, so naming one can change more than the one value. It auto-selects
+`learning_rate` for `Logloss` and `MultiClass` unless `l2_leaf_reg` is set, and it
+chooses `bootstrap_type` from the loss it inferred.
+
+```yaml
+catboost_args:
+  iterations: 200
+  learning_rate: 0.1
+  depth: 6
+  l2_leaf_reg: 3.0
+
+gridsearch_catboost_args:
+  iterations: [100, 200, 400]
+  learning_rate: {low: 1.0e-2, high: 3.0e-1, log: true}
+  depth: [4, 6, 8]
+  l2_leaf_reg: {low: 1.0, high: 10.0}
+  random_strength: [0.5, 1.0, 2.0]
+```
+
+```{note}
+`min_data_in_leaf` is accepted but **not searchable**. CatBoost honours it only under
+`grow_policy: Depthwise` or `Lossguide`; at the default `SymmetricTree` every value produces
+an identical model, so searching it multiplies the fits for nothing. Give it a single value
+alongside a `grow_policy` that honours it — several values are refused with a message saying
+so.
+```
+
+```{warning}
+**`subsample` and `bagging_temperature` are not interchangeable, and which one is legal
+depends on the loss.** They belong to mutually exclusive CatBoost bootstrap schemes, and
+CatBoost picks the default scheme from the loss: `MVS` under `Logloss`, `Bayesian` under
+`MultiClass`. QProfiler is a binary-classification tool, so the inferred loss is
+`Logloss` and `subsample` works at the default — but setting `loss_function: MultiClass`,
+which is legal even on a two-class target, flips the scheme and fails:
+
+    CatBoostError: default bootstrap type is Bayesian, which does not support subsample
+
+QBioCode pins `bootstrap_type` for you as soon as you name either parameter —
+`Bernoulli` for `subsample`, `Bayesian` for `bagging_temperature` — so the behaviour no
+longer depends on the loss. Naming *both*, or searching `bootstrap_type` across values
+that contradict the one you named, is rejected before the search starts with a message
+naming the config key. The shipped block above simply stays clear of the area.
+
+`loss_function: MultiClass` also makes CatBoost's `predict()` return an `(n, 1)` column
+rather than a flat array. QBioCode flattens it, so the stored predictions keep the same
+shape as every other model's — scikit-learn scores a column vector correctly either way,
+so this affects the results frame rather than the metrics.
+```
+
+**Example: TabPFN**
+
+TabPFN needs only the optional extra — no API key, no license acceptance:
+
+```bash
+pip install "qbiocode[tabpfn]"
+```
+
+QBioCode pins `model_version: v2`, whose weights are published under the Prior Labs
+License (Apache 2.0 plus an attribution clause) and download anonymously on first fit.
+
+```{warning}
+**The model version is a licensing choice.** TabPFN's *code* is Apache 2.0 plus
+attribution, but its *weights* are licensed per version and the regimes differ sharply:
+
+| `model_version` | Weights license | Commercial use |
+| --- | --- | --- |
+| `v2` (default) | Prior Labs License v1.1 (Apache 2.0 + attribution) | **Permitted** |
+| `v2.5` | TABPFN-2.5 Non-Commercial License | No |
+| `v2.6` | TABPFN-2.6 Non-Commercial License | No |
+| `v3` | TABPFN-3 Non-Commercial License | No |
+
+The three newest are **non-production as well as non-commercial**: their license permits
+testing, evaluation, internal benchmarking and academic research, but not revenue-generating
+activity, production systems, or training other models for commercial use. They also require
+accepting that license against a Prior Labs account, which upstream does interactively — so
+they cannot be fetched unattended, and an API key alone is not enough. Setting
+`model_version` to one of them warns and names the license.
+
+`v2` is the default precisely because QBioCode is Apache-2.0 software whose users include
+companies; a default that quietly imposed a non-commercial license on them would be the
+wrong default whatever its accuracy.
+```
+
+Only if you opt into a restricted version do you need an API key. There are two ways to
+supply one, and the first is preferred:
+
+```yaml
+# The key lives in a file OUTSIDE the repository, so it cannot be committed.
+tabpfn_json_path: '~/.config/qbiocode/tabpfn.json'
+```
+
+Create that file with the correct permissions rather than by hand:
+
+```bash
+python -c "from qbiocode.utils import write_token_template; print(write_token_template())"
+# -> ~/.config/qbiocode/tabpfn.json, created mode 0600
+```
+
+then paste the key into its `token` field:
+
+```json
+{
+  "token": "<your api key>"
+}
+```
+
+QProfiler reads it automatically whenever `tabpfn` is in the `model` list. Outside
+QProfiler, call `qbiocode.utils.load_tabpfn_token()` before fitting.
+
+The alternative is to export the variable TabPFN itself reads, which takes precedence over
+the file:
+
+```bash
+export TABPFN_TOKEN="<your api key>"
+```
+
+```{warning}
+**Do not put the key in `config.yaml`, or in any file inside the repository.** The
+`~/.config/` location is the supported one specifically because it is outside the
+checkout: a gitignored file in the tree is *unlikely* to be committed, not unable to be —
+`git add -f` overrides the rule, a rewritten `.gitignore` stops covering it, and a copy
+made into a sibling clone is not covered at all.
+
+QBioCode never logs or prints the token. `qbiocode.utils.describe_token_source()` reports
+*whether* a token is configured and where it came from, with no key material at all — not
+even a prefix or fingerprint — because tutorial notebooks are published with their
+committed outputs.
+```
+
+```yaml
+tabpfn_args:
+  n_estimators: 4
+  softmax_temperature: 0.9
+  balance_probabilities: False
+  average_before_softmax: False
+  device: cpu
+
+gridsearch_tabpfn_args:
+  n_estimators: [1, 4, 8]
+  softmax_temperature: {low: 0.5, high: 1.5}
+  balance_probabilities: [True, False]
+  device: cpu
+```
+
+```{note}
+**Nothing in the TabPFN block is a training hyperparameter.** The weights are frozen and
+pretrained; `fit` only memorises the training rows, and every setting above is an
+inference knob -- none of them changes model capacity. `n_estimators` buys ensemble
+members over differently preprocessed views of the same rows.
+
+Two consequences for tuning. A trial costs `cross_validation` full transformer forward
+passes rather than five cheap tree fits, so keep `gridsearch_tabpfn_args` small. And
+`device` is pinned to `cpu` above deliberately: MPS and CUDA are not numerically
+identical to CPU, which would make a benchmark irreproducible across machines.
+
+TabPFN also supports **at most 10 classes**. Unlike its row and feature limits, that one
+cannot be waived with `ignore_pretraining_limits`; a dataset with more is rejected up
+front, naming its class count.
+```
+
 ```{seealso}
-For detailed parameter descriptions, see the scikit-learn documentation:
+For detailed parameter descriptions, see the upstream documentation:
 - [SVC Parameters](https://scikit-learn.org/stable/modules/generated/sklearn.svm.SVC.html)
 - [Random Forest Parameters](https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestClassifier.html)
 - [XGBoost Parameters](https://xgboost.readthedocs.io/en/stable/parameter.html)
+- [CatBoost Training Parameters](https://catboost.ai/docs/en/references/training-parameters/common)
+- [TabPFN](https://github.com/PriorLabs/TabPFN)
 ```
 
 ### Quantum Model Hyperparameters
@@ -418,7 +717,7 @@ stratify: ['y']
 scaling: ['True']
 
 # Models to evaluate
-model: ['rf', 'svc', 'mlp', 'xgb', 'qsvc', 'pqk']
+model: ['rf', 'svc', 'mlp', 'xgb', 'catboost', 'qsvc', 'pqk']
 
 # Classical model parameters
 rf_args:
@@ -477,7 +776,8 @@ resil_level: 2
 **Common Pitfalls:**
 
 - **Missing Seeds**: Always set `seed` and `q_seed` for reproducibility
-- **Too Many Grid Search Combinations**: Start with small grids to estimate runtime
+- **Too Many Combinations Under `tuner: grid`**: the exhaustive sweep fits every
+  combination; start small to estimate runtime, or use the default `tuner: optuna`
 ```
 
 ---
@@ -494,10 +794,12 @@ resil_level: 2
 - Check device name spelling (use `ibm_<device>` format)
 - Ensure you have access to the specified instance
 
-**Problem: "Grid search taking too long"**
-- Reduce number of parameter combinations
+**Problem: "Hyperparameter tuning taking too long"**
+- Lower `n_trials` (the Optuna tuner's budget maps directly onto fits)
 - Use fewer cross-validation folds
-- Consider using `RandomizedSearchCV` for large grids
+- If you set `tuner: grid`, the cost is the *whole* cross product regardless of
+  `n_trials` -- switch back to `tuner: optuna` unless you specifically need the
+  exhaustive sweep to reproduce an older result
 
 **Problem: "Out of memory"**
 - Reduce `n_components` for embeddings

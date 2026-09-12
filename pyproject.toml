@@ -64,8 +64,8 @@ Repository = "https://github.com/qiskit-community/qbiocode"
 
 [project.optional-dependencies]
 # Mirrors of the tiered files in requirements/ -- tests/test_requirements_consistency.py
-# asserts that `quvine` and `docs` here match requirements-quvine.txt and
-# requirements-docs.txt exactly, so the two cannot drift apart.
+# asserts that `quvine`, `tabpfn` and `docs` here match requirements-quvine.txt,
+# requirements-tabpfn.txt and requirements-docs.txt exactly, so they cannot drift apart.
 apps = [
     "hydra-core",
     "joblib",
@@ -85,6 +85,17 @@ quvine = [
     "python-louvain",
     "ripser",
     "torch-geometric",
+]
+# TabPFN classical learner (qbiocode.learning.compute_tabpfn). An extra rather than a base
+# dependency because of its weight -- it brings torch's ecosystem plus mlx, lightgbm,
+# huggingface-hub and safetensors, and `import qbiocode` must not pull torch in. No API
+# token or license acceptance is needed: QBioCode pins model version v2, whose weights are
+# under the Prior Labs License (Apache 2.0 plus attribution); the newer v2.5/v2.6/v3
+# checkpoints are non-commercial and are opt-in via `model_version`. `import qbiocode` and
+# every other model work without this extra, and compute_tabpfn raises an ImportError
+# naming it when the model is selected. See requirements/requirements-tabpfn.txt.
+tabpfn = [
+    "tabpfn",
 ]
 # `pandoc` is intentionally not listed: it is a system binary, not a Python
 # package. Install it with brew/apt -- see requirements/requirements-docs.txt.
@@ -131,7 +142,7 @@ dev = [
 ]
 # Union of every extra above. Keep in sync when adding to any tier.
 all = [
-    "qbiocode[apps,quvine,docs,dev]",
+    "qbiocode[apps,quvine,tabpfn,docs,dev]",
 ]
 
 [project.scripts]

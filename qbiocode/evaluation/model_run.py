@@ -3,6 +3,7 @@ import inspect
 import json
 import logging
 import os
+import warnings
 
 import pandas as pd
 
@@ -12,6 +13,10 @@ from joblib import Parallel, delayed
 current_dir = os.getcwd()
 
 logger = logging.getLogger(__name__)
+
+#: Search engines ``args['tuner']`` may name. Both are driven by the same
+#: ``gridsearch_<model>_args`` blocks; see :mod:`qbiocode.learning._tuning`.
+_TUNERS = frozenset({"optuna", "grid"})
 
 
 def _call_with_global_seeds(compute_fn, seed, q_seed, *fn_args, **fn_kwargs):
@@ -62,9 +67,15 @@ def model_run(X_train, X_test, y_train, y_test, data_key, args):
         args (dict): Dictionary containing configuration parameters, including:
             - model: List of models to run.
             - n_jobs: Number of parallel jobs to run.
-            - grid_search: Boolean indicating whether to perform grid search.
-            - cross_validation: Cross-validation strategy.
-            - gridsearch_<model>_args: Arguments for grid search for each model.
+            - grid_search: Boolean indicating whether to tune hyperparameters.
+            - tuner: 'optuna' (default) or 'grid' -- which search to run when
+              grid_search is on.
+            - n_trials: Trial budget for the Optuna tuner, default 50.
+            - cross_validation: Number of cross-validation folds, default 5.
+            - gridsearch_<model>_args: Values or ranges to search for each model.
+              'catboost' and 'tabpfn' use the same blocks as the other classical
+              models; see qbiocode.learning.compute_catboost and .compute_tabpfn for
+              the hyperparameters each accepts.
             - <model>_args: Additional arguments for each model.
 
     Returns:
@@ -76,18 +87,22 @@ def model_run(X_train, X_test, y_train, y_test, data_key, args):
 
     # Lazy imports to avoid circular dependency
     # These imports happen inside the function, not at module level
+    from qbiocode.learning.compute_catboost import compute_catboost, compute_catboost_opt
     from qbiocode.learning.compute_dt import compute_dt, compute_dt_opt
     from qbiocode.learning.compute_lr import compute_lr, compute_lr_opt
     from qbiocode.learning.compute_rf import compute_rf, compute_rf_opt
     from qbiocode.learning.compute_mlp import compute_mlp, compute_mlp_opt
     from qbiocode.learning.compute_xgb import compute_xgb, compute_xgb_opt
-    from qbiocode.learning.compute_pqk import compute_pqk
-    from qbiocode.learning.compute_qpl import compute_qpl
-    from qbiocode.learning.compute_qnn import compute_qnn
-    from qbiocode.learning.compute_qsvc import compute_qsvc
+    from qbiocode.learning.compute_pqk import compute_pqk, compute_pqk_opt
+    from qbiocode.learning.compute_qpl import compute_qpl, compute_qpl_opt
+    from qbiocode.learning.compute_qnn import compute_qnn, compute_qnn_opt
+    from qbiocode.learning.compute_qsvc import compute_qsvc, compute_qsvc_opt
     from qbiocode.learning.compute_nb import compute_nb, compute_nb_opt
     from qbiocode.learning.compute_svc import compute_svc, compute_svc_opt
-    from qbiocode.learning.compute_vqc import compute_vqc
+    from qbiocode.learning.compute_vqc import compute_vqc, compute_vqc_opt
+    # TabPFN imports its own dependency lazily, so naming it here does not require
+    # the optional [tabpfn] extra to be installed -- only *selecting* it does.
+    from qbiocode.learning.compute_tabpfn import compute_tabpfn, compute_tabpfn_opt
     
     # Build model dictionary
     compute_ml_dict = {
@@ -103,18 +118,33 @@ def model_run(X_train, X_test, y_train, y_test, data_key, args):
         "rf": compute_rf,
         "xgb_opt": compute_xgb_opt,
         "xgb": compute_xgb,
+        "catboost_opt": compute_catboost_opt,
+        "catboost": compute_catboost,
+        "tabpfn_opt": compute_tabpfn_opt,
+        "tabpfn": compute_tabpfn,
         "mlp_opt": compute_mlp_opt,
         "mlp": compute_mlp,
         "qsvc": compute_qsvc,
+        "qsvc_opt": compute_qsvc_opt,
         "vqc": compute_vqc,
+        "vqc_opt": compute_vqc_opt,
         "qnn": compute_qnn,
+        "qnn_opt": compute_qnn_opt,
         "pqk": compute_pqk,
+        "pqk_opt": compute_pqk_opt,
         "qpl": compute_qpl,
-
+        "qpl_opt": compute_qpl_opt,
     }
 
-    # Quantum models don't have _opt versions (use separate configs for hyperparameter tuning)
     quantum_models = {"qsvc", "qnn", "vqc", "pqk", "qpl"}
+
+    # Quantum models now have `_opt` twins, but they stay off unless asked for twice:
+    # `grid_search: True` alone tunes only the classical models, exactly as before. A
+    # quantum fit builds an n-by-n fidelity kernel by circuit simulation, so turning
+    # tuning on for a quantum model multiplies its cost by the trial budget -- which
+    # would have made every existing config that names one dramatically slower on
+    # upgrade, with no change on the user's part.
+    tune_quantum = bool(args.get("tune_quantum", False))
 
     # Validate the requested models before dispatching. An unknown name otherwise
     # reached `compute_ml_dict[method]` inside a joblib worker and came back as a
@@ -143,6 +173,50 @@ def model_run(X_train, X_test, y_train, y_test, data_key, args):
                 f"grid_search is enabled but {missing_opt} have no '_opt' "
                 f"implementation. Disable grid_search or drop those models."
             )
+        # A misspelt tuner would otherwise fall through to the `else` branch inside
+        # every `_opt` function and run Optuna, so a config asking for the
+        # exhaustive grid would silently not get it.
+        missing_blocks = [
+            m for m in requested
+            if m in quantum_models
+            and args.get("tune_quantum", False)
+            and not args.get("gridsearch_" + m + "_args")
+        ]
+        if missing_blocks:
+            raise ValueError(
+                f"tune_quantum is enabled but {missing_blocks} have no "
+                f"'gridsearch_<model>_args' block naming what to search, so there is "
+                f"nothing to tune. Add one per model, or drop tune_quantum to run them "
+                f"at their configured hyperparameters."
+            )
+        # There is no exhaustive-grid engine for the quantum models: their `_opt`
+        # wrappers score a whole compute function, not an estimator GridSearchCV could
+        # drive. Asking for `tuner: grid` and getting Optuna anyway is the kind of
+        # silent substitution that makes a result impossible to interpret later.
+        if args.get("tune_quantum", False) and args.get("tuner", "optuna") == "grid":
+            quantum_requested = [m for m in requested if m in quantum_models]
+            if quantum_requested:
+                warnings.warn(
+                    f"tuner: 'grid' applies to the classical models only. "
+                    f"{quantum_requested} will still be tuned with Optuna -- a quantum "
+                    f"candidate is scored by running the whole model, so there is no "
+                    f"exhaustive-grid engine for them. Set tune_quantum: False to run "
+                    f"them at their configured hyperparameters instead.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        tuner = args.get("tuner", "optuna")
+        if tuner not in _TUNERS:
+            raise ValueError(
+                f"Unknown tuner {tuner!r} in args['tuner']. Choose one of "
+                f"{sorted(_TUNERS)}: 'optuna' samples args['n_trials'] "
+                f"configurations with Optuna, 'grid' fits every combination."
+            )
+    elif args.get("tune_quantum", False):
+        raise ValueError(
+            "tune_quantum is enabled but grid_search is not, so no tuning would run. "
+            "Set grid_search: True as well, or drop tune_quantum."
+        )
     del grid_search_requested
 
     # Run classical and quantum models
@@ -157,16 +231,22 @@ def model_run(X_train, X_test, y_train, y_test, data_key, args):
     # Check if any quantum models are in the model list when grid_search is enabled
     if grid_search:
         quantum_in_models = [m for m in args["model"] if m in quantum_models]
-        if quantum_in_models:
+        if quantum_in_models and not tune_quantum:
             print("\n" + "=" * 80)
-            print("WARNING: Grid search is enabled with quantum models:", quantum_in_models)
+            print("NOTE: Hyperparameter tuning is enabled, but not for these quantum",
+                  "models:", quantum_in_models)
             print("=" * 80)
-            print("Quantum models do not support automated grid search.")
-            print("For hyperparameter tuning of quantum models, you should:")
-            print("  1. Create multiple configuration files with different hyperparameters")
-            print("  2. Run QProfiler separately for each configuration")
-            print("  3. Compare results across runs")
-            print("\nUse the config generation utility:")
+            print("They will run at their configured hyperparameters. Quantum tuning is")
+            print("off by default because each trial is a quantum fit: on the simulator a")
+            print("single QSVC fit builds an n-by-n fidelity kernel, so a 10-trial study")
+            print("costs roughly ten ordinary runs of that model.")
+            print("\nTo tune them with Optuna, set both keys and give each model a")
+            print("gridsearch_<model>_args block:")
+            print("    grid_search: True")
+            print("    tune_quantum: True")
+            print("    n_trials_quantum: 10")
+            print("\nTo sweep them exhaustively instead, generate one config per")
+            print("combination and compare across runs:")
             print("  from qbiocode.utils import generate_qml_experiment_configs")
             print("  num_configs, _ = generate_qml_experiment_configs(")
             print("      template_config_path='configs/config.yaml',")
@@ -228,8 +308,32 @@ def model_run(X_train, X_test, y_train, y_test, data_key, args):
     if grid_search:
         results = []
         for method in args["model"]:
-            if method in quantum_models:
-                # Quantum models don't have _opt versions, use regular function
+            if method in quantum_models and tune_quantum:
+                # Tuned like the classical models, from the same
+                # `gridsearch_<model>_args` block, but on its own budget and without
+                # `cv`/`tuner`: a quantum candidate is scored on one stratified holdout
+                # rather than k folds, and there is no exhaustive-grid engine to select.
+                compute_fn = compute_ml_dict[method + "_opt"]
+                result = delayed(_call_with_global_seeds)(
+                    compute_fn,
+                    seed,
+                    q_seed,
+                    X_train,
+                    X_test,
+                    y_train,
+                    y_test,
+                    args,
+                    model=method + "_opt",
+                    data_key=data_key,
+                    n_trials=args.get("n_trials_quantum", 10),
+                    validation_split=args.get("validation_split", 0.25),
+                    **_seeded_kwargs(
+                        compute_fn, args.get("gridsearch_" + method + "_args", {})
+                    ),
+                    verbose=False,
+                )
+            elif method in quantum_models:
+                # Untuned: run at the configured hyperparameters, as before.
                 compute_fn = compute_ml_dict[method]
                 result = delayed(_call_with_global_seeds)(
                     compute_fn,
@@ -258,7 +362,12 @@ def model_run(X_train, X_test, y_train, y_test, data_key, args):
                     y_test,
                     args,
                     model=method + "_opt",
-                    cv=args["cross_validation"],
+                    # `args["cross_validation"]` was an unguarded lookup on this
+                    # branch only, so tuning a model from a config that omitted the
+                    # key died here rather than at validation.
+                    cv=args.get("cross_validation", 5),
+                    tuner=args.get("tuner", "optuna"),
+                    n_trials=args.get("n_trials", 50),
                     **_seeded_kwargs(
                         compute_fn, args.get("gridsearch_" + method + "_args", {})
                     ),

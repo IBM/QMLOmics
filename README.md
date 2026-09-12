@@ -14,7 +14,7 @@ QBioCode provides tools for benchmarking quantum and classical machine learning 
 - **QSage**: Meta-learning tool for intelligent model selection
 - **Data Generation**: Create artificial datasets with controlled complexity
 - **Quantum ML Support**: QSVC, PQK, VQC, QNN, Quantum Ensemble implementations
-- **Classical ML Baselines**: RF, SVM, LR, DT, NB, MLP, XGBoost
+- **Classical ML Baselines**: RF, SVM, LR, DT, NB, MLP, XGBoost, CatBoost, and TabPFN (a pretrained tabular transformer, via the optional `[tabpfn]` extra)
 - **Comprehensive Documentation**: Detailed tutorials and API reference
 
 ## 📋 Requirements
@@ -377,7 +377,7 @@ Learn to use meta-learning for model selection:
 ### 11. [Quantum Projection Learning](tutorial/Quantum_Projection_Learning/QPL_example.ipynb)
 Advanced quantum ML techniques with classical baselines:
 - Apply quantum feature maps to create quantum projections
-- Train SVC, RF, XGBoost, MLP and LR on quantum features
+- Train SVC, RF, XGBoost, CatBoost, MLP and LR on quantum features
 - Compare quantum-enhanced against classical baselines
 
 ### 12. [PQK on Ovarian Cancer](tutorial/PQK%20-%20OV.ipynb)
@@ -410,6 +410,9 @@ qbc.generate_data(type_of_data='classes', ...)
 - Naive Bayes (NB)
 - Multi-Layer Perceptron (MLP)
 - XGBoost
+- CatBoost
+- TabPFN — pretrained tabular transformer (needs the `[tabpfn]` extra; no API key or
+  license acceptance, as QBioCode pins the commercially-usable `v2` weights)
 
 **Quantum Models:**
 - Quantum Support Vector Classifier (QSVC)

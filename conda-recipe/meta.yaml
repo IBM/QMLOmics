@@ -56,6 +56,10 @@ requirements:
     - tqdm
     - umap-learn
     - xgboost
+    # catboost is a core dependency alongside xgboost. tabpfn is deliberately
+    # absent: it is the [tabpfn] pip extra, kept out of the base install because it
+    # brings torch's ecosystem plus mlx, lightgbm, huggingface-hub and safetensors.
+    - catboost
     # Single-cell / multi-omics
     - scanpy
     - anndata
@@ -99,7 +103,7 @@ about:
     - QuVINE: Quantum View-based Network Embeddings for graph data
     - Data Generation: Create artificial datasets with controlled complexity
     - Quantum ML Support: QSVC, PQK, VQC, QNN implementations
-    - Classical ML Baselines: RF, SVM, LR, DT, NB, MLP, XGBoost
+    - Classical ML Baselines: RF, SVM, LR, DT, NB, MLP, XGBoost, CatBoost
   doc_url: https://qiskit-community.github.io/QBioCode/
   dev_url: https://github.com/qiskit-community/QBioCode
 

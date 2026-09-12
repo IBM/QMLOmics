@@ -9,6 +9,7 @@ from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier
 
 # ====== Additional local imports ======
 from qbiocode.learning._grid import build_param_grid
+from qbiocode.learning._tuning import build_search_space, run_study
 from qbiocode.evaluation.model_evaluation import modeleval
 
 # ====== Scikit-learn imports ======
@@ -123,13 +124,18 @@ def compute_lr_opt(
     verbose=False,
     max_iter=None,
     random_state=None,
+    *,
+    tuner="optuna",
+    n_trials=50,
 ):
     """This function also generates a model using a Logistic Regression (LR) method as implemented in
     `scikit-learn <https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.LogisticRegression.html>`__.
-    The difference here is that this function runs a grid search. The range of the grid search for each parameter is specified in the config.yaml file. The
+    The difference here is that this function tunes the model's hyperparameters.
+    The values or ranges searched for each parameter are specified in the config.yaml file,
+    and ``tuner`` selects the search engine (Optuna by default). The
     combination of parameters that led to the best performance is saved and returned as best_params, which can then be used on similar
-    datasets, without having to run the grid search. The function returns the evaluation of the model
-    on the test dataset, including accuracy, AUC, F1 score, and the time taken to train and validate the model across the grid search.
+    datasets, without having to repeat the search. The function returns the evaluation of the model
+    on the test dataset, including accuracy, AUC, F1 score, and the time taken to train and validate the model across the search.
     This function is designed to be used in a supervised learning context, where the goal is to classify data points.
 
     Args:
@@ -147,6 +153,14 @@ def compute_lr_opt(
         max_iter (list): List of maximum iterations to try, default is an empty list.
         random_state (int or None): Seed for the estimator's own randomness. QProfiler fills this in from the run's ``seed`` so two runs at one seed agree; None leaves the estimator drawing from the global RNG.
 
+        tuner (str): Which search to run. ``'optuna'`` (default) spends ``n_trials`` on
+            Optuna's TPE sampler, which also allows a hyperparameter to be given as a
+            ``{low, high}`` range rather than a list. ``'grid'`` restores the exhaustive
+            ``GridSearchCV`` sweep over every combination.
+        n_trials (int): Trial budget when ``tuner='optuna'``, default is 50. Lowered
+            automatically when the configured values describe fewer distinct
+            combinations than that, so a small block does not re-evaluate the same
+            models.
     Returns:
         modeleval (dict): A dictionary containing the evaluation metrics, best parameters, and time taken for training and validation.
     """
@@ -155,21 +169,35 @@ def compute_lr_opt(
     # Only the hyperparameters actually supplied. Passing all of them meant a
     # config that named a subset died in sklearn on the first one it left at its
     # `[]` default; see qbiocode.learning._grid.
-    params = build_param_grid(
-        "lr",
-        {
-            "penalty": penalty,
-            "C": C,
-            "solver": solver,
-            "max_iter": max_iter,
-        },
-    )
-    # Perform Grid Search to find the best parameters
-    grid_search = GridSearchCV(LogisticRegression(random_state=random_state), param_grid=params, cv=cv)
-    grid_search.fit(X_train, y_train)
-
-    # Get the best parameters and use them to create the final Decision Tree model
-    best_params = grid_search.best_params_
+    candidates = {
+        "penalty": penalty,
+        "C": C,
+        "solver": solver,
+        "max_iter": max_iter,
+    }
+    # Optuna by default; the exhaustive grid stays reachable so a number published
+    # against it can still be reproduced. Both engines are handed the same
+    # `candidates`, so switching `tuner` never changes *which* hyperparameters are
+    # searched -- only how the search spends its fits.
+    if tuner == "grid":
+        search = GridSearchCV(
+            LogisticRegression(random_state=random_state),
+            param_grid=build_param_grid("lr", candidates),
+            cv=cv,
+        )
+        search.fit(X_train, y_train)
+        best_params = search.best_params_
+    else:
+        best_params = run_study(
+            LogisticRegression,
+            build_search_space("lr", candidates),
+            X_train,
+            y_train,
+            cv=cv,
+            n_trials=n_trials,
+            seed=random_state,
+            fixed={"random_state": random_state},
+        )
     best_logres = LogisticRegression(**best_params, random_state=random_state)
     best_logres.fit(X_train, y_train)
 

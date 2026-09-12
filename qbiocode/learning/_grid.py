@@ -32,7 +32,7 @@ default, which is what dropping it from the grid does.
 """
 
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 
 def build_param_grid(model, candidates):
@@ -58,6 +58,19 @@ def build_param_grid(model, candidates):
     for name, values in candidates.items():
         if values is None:
             continue
+        # A `{low, high}` range is meaningful to the Optuna tuner but not to a grid,
+        # which can only enumerate. A dict is not a Sequence, so it used to be wrapped
+        # into a one-element list and handed to the estimator as a *value*, surfacing
+        # as `InvalidParameterError: The 'C' parameter of SVC must be a float ... Got
+        # {'low': 0.001, ...}` -- an error about the estimator, naming neither the
+        # config entry nor the tuner that would accept it.
+        if isinstance(values, Mapping):
+            raise ValueError(
+                f"{model!r} hyperparameter {name!r} is written as a range "
+                f"({dict(values)!r}), which only the Optuna tuner can sample. Either "
+                f"set tuner: optuna, or write {name!r} as a list of values for the "
+                f"grid to enumerate."
+            )
         # A string is a sequence, so `max_features: sqrt` would otherwise be
         # searched as ['s', 'q', 'r', 't'] -- four invalid values, no error, and a
         # best_params_ that means nothing.

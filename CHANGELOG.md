@@ -6,6 +6,414 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+
+#### CatBoost and TabPFN as classical classifiers
+
+- **Two new classical models, `catboost` and `tabpfn`**, selectable from `model` in the
+  config exactly like `rf` or `xgb`, each with an `_opt` twin driven by
+  `gridsearch_<model>_args` through both the Optuna and the exhaustive-grid engines.
+  Both are also available as `qpl` heads on a quantum projection, and both are exported
+  from `qbiocode` and `qbiocode.learning`. Guarded by `tests/test_catboost_tabpfn.py`
+  and `tests/integration/test_catboost_tabpfn_integration.py`.
+
+- **`catboost` is a core dependency; `tabpfn` is the new `[tabpfn]` extra.** CatBoost is
+  an unconditional scikit-learn-compatible estimator with no gate, so it sits in
+  `requirements-base.txt` beside xgboost. TabPFN could not: its pretrained weights are
+  downloaded behind a **one-time license acceptance**, so it can never run unattended
+  from a default install. Naming it without the extra raises an ImportError naming the
+  extra; the license failure is translated into one naming `TABPFN_TOKEN` and the
+  acceptance URL, instead of surfacing as a bare `TabPFNLicenseError` six frames inside
+  `tabpfn.model_loading`.
+
+- **Neither model is wrapped in `OneVsOneClassifier`**, unlike `compute_rf` and
+  `compute_xgb`. CatBoost selects `MultiClass` as its loss automatically and TabPFN is
+  natively multiclass, so a wrapper would fit n(n-1)/2 models to reach the answer the
+  native loss already gives -- and for TabPFN would multiply an expensive forward pass
+  by the same factor.
+
+- **CatBoost as a QuantumSage surrogate**, as `sage_type='catboost_optuna'` (CLI:
+  `--model-type catboost`), mirroring `_sage_xgboost_optuna` including its Optuna study
+  and R-squared scoring. Having two independent boosters is useful precisely because
+  they disagree on the small, wide tables QProfiler produces.
+
+- **TabPFN is pinned to model version `v2`, and that is a licensing decision.** TabPFN's
+  *code* is Apache 2.0 plus an attribution clause, but its *weights* are licensed per
+  version and the regimes diverge: `v2` is under the Prior Labs License v1.1 (Apache 2.0 +
+  attribution) and permits commercial use, while `v2.5`, `v2.6` and `v3` are under
+  per-version **non-commercial and non-production** licenses. Upstream's constructor
+  defaults to `v3`. QBioCode is Apache-2.0 software whose users include companies, so
+  inheriting that default would quietly impose a non-commercial license on them.
+
+  `model_version` (default `'v2'`) selects the checkpoint on both learners and is resolved
+  into `model_path` before any fit — so it is visible in `get_params()`, survives
+  `sklearn.base.clone` mid-search, and cannot differ between trials. It is deliberately not
+  searchable: trials would otherwise compare different models under different licenses and
+  report the winner as a hyperparameter. Selecting a restricted version warns and names the
+  license; an explicit `model_path` still wins, which is how to run offline.
+
+  A practical consequence: **`v2` needs no API token and no license acceptance at all.** It
+  downloads anonymously, so `tabpfn` now works from a bare `pip install "qbiocode[tabpfn]"`
+  — the previously-skipped TabPFN tests now run, and the tutorial notebook ships real
+  numbers (0.840 accuracy here, ahead of both tuned boosters, with no training and no
+  tuning).
+
+- **A place to keep the TabPFN API token that cannot be committed.**
+  `qbiocode.utils.tabpfn_account` reads the key from `~/.config/qbiocode/tabpfn.json`
+  (created mode `0600` by `write_token_template()`) and puts it in `TABPFN_TOKEN`, which is
+  the only channel TabPFN accepts. The location is **outside the repository** on purpose: a
+  gitignored file in the tree is unlikely to be committed, not unable to be — `git add -f`
+  overrides the rule, a rewritten `.gitignore` stops covering it, and a copy in a sibling
+  clone is not covered at all. `tabpfn_json_path` in a config mirrors the existing
+  `qiskit_json_path`, and QProfiler loads the token in the parent process (so joblib
+  workers inherit it) whenever `tabpfn` is in the model list.
+
+  Nothing in the module returns, logs or prints the token. `describe_token_source()`
+  reports *whether* a token is configured and where it came from and nothing else — no
+  value, no prefix, no fingerprint — because the tutorial notebooks are published with
+  their committed outputs. `tests/test_tabpfn_token.py` asserts that, checks the
+  `.gitignore` rules with real `git check-ignore` rather than by reading patterns, warns on
+  a group-readable file, refuses to overwrite an existing token file, and treats the
+  unfilled template as "not configured" so a half-finished setup does not look like a key
+  TabPFN mysteriously rejects. It also adds a general guard that no committed notebook
+  output carries a token-shaped value.
+
+- **`qbiocode.utils.check_tabpfn_access()` tells the three TabPFN gates apart**, because
+  upstream conflates them. With a valid API key whose license has not been accepted,
+  `tabpfn.browser_auth.ensure_license_accepted` falls through to a browser login, fails for
+  want of a TTY, and reports *"no interactive terminal is available... set the TABPFN_TOKEN
+  environment variable"* — advising a step that is already done. The real cause is that an
+  API key **authenticates** you and does not **accept** the license, which is a separate
+  action on the account. The diagnostic distinguishes: extra missing, token absent, token
+  rejected, token valid but license unaccepted, server unreachable, or nothing blocking —
+  and returns no token material, so it is safe to paste into an issue. The
+  weights-unavailable error now points at it.
+
+- **New tutorial: `tutorial/CatBoost_and_TabPFN/catboost_and_tabpfn.ipynb`.** Runs
+  `catboost` against `xgb` and `rf` untuned and then tuned, and spends most of its length
+  on the two things that are not obvious from the config: the bootstrap conflict (showing
+  all four combinations and what QBioCode says about each), and `min_data_in_leaf` being
+  *measured* inert at the default grow policy rather than merely asserted to be. Its
+  TabPFN section runs the model if the weights are reachable and otherwise prints the
+  translated error plus the one-time license step, so the notebook executes end to end
+  either way -- it is in `tests/integration/test_notebook_execution.py`, which proves that.
+  (Once the v2 pin removed the licence gate, that cell was changed to fit TabPFN for real
+  rather than degrade, so the notebook now *requires* the `[tabpfn]` extra and the execution
+  test skips it when the extra is absent. CI never reached this, because the default
+  `addopts` excludes `slow`.)
+  It also makes the point that TabPFN needs a license rather than a GPU, since assuming
+  the opposite is the likely first guess.
+
+- **`tutorial/QProfiler/example_qprofiler.ipynb` now includes `catboost`** in its model
+  list, so the tutorial sweep compares two boosters. Its first cell also gained the
+  `OMP_NUM_THREADS` guard the newer notebooks carry -- that config runs `pqk` (qiskit-aer)
+  alongside xgboost and catboost, which is exactly the combination that dies without a
+  traceback on macOS -- and a `warnings.simplefilter("ignore")` ahead of the imports,
+  because without ipywidgets installed `tqdm.auto` warns at import time and the warning
+  text carries the absolute path of the environment into the published page.
+
+- **`compute_tabpfn` imports `tabpfn` lazily**, inside its functions. `import tabpfn`
+  imports `torch`, which would have undone `qbiocode.utils._openmp`'s ordering guard and
+  mapped torch's OpenMP runtime into every QBioCode process -- including ones that only
+  wanted a random forest. `tabpfn_is_available()` answers the availability question with
+  `importlib.util.find_spec`, which does not execute the module.
+
+### Fixed
+
+- **A CatBoost config's validity depended on the loss rather than on the config.**
+  `subsample` and `bagging_temperature` belong to mutually exclusive CatBoost bootstrap
+  schemes, and CatBoost derives the default scheme from the loss: `MVS` for `Logloss`,
+  `Bayesian` for `MultiClass`. QProfiler is a binary-classification tool, so the
+  inferred loss is `Logloss` and `subsample` works at the default -- but
+  `loss_function: MultiClass` is legal on a two-class target and flips the scheme:
+
+      CatBoostError: default bootstrap type is Bayesian, which does not support subsample
+
+  Because `run_study`'s Optuna objective does not catch exceptions, one such corner
+  aborted the whole study rather than costing a trial. `bootstrap_type` is now pinned as
+  soon as either parameter is named (`Bernoulli` for `subsample`, `Bayesian` for
+  `bagging_temperature`), on both the tuned and untuned paths. A block that asks for both
+  schemes at once, or searches `bootstrap_type` across values contradicting the one it
+  named, is rejected before the search starts with a message naming the config key. The
+  shipped `gridsearch_catboost_args` stays clear of the area entirely.
+
+- **A TabPFN fit killed the process outright on macOS.** `qbiocode/__init__.py` initialises
+  xgboost's `libomp` first, deliberately; importing `tabpfn` brings torch's copy in as a
+  second LLVM OpenMP runtime under the same install name, and the second one to open a
+  parallel region dies below Python — exit 139, no traceback, no exception, a notebook front
+  end reporting only "kernel died". Measured: a `compute_tabpfn` call in a process that had
+  imported `qbiocode` exited 139 without `OMP_NUM_THREADS` set and returned a score with it.
+  Reordering cannot fix it — xgboost-first breaks torch and torch-first breaks XGBoost, so
+  the orderings are mutually exclusive. `_cap_openmp_threads` now sets `OMP_NUM_THREADS=1`
+  immediately before the `tabpfn` import, which is early enough for torch to read it, and
+  warns that it did. Scoped to macOS, and it never overrides a value the caller set.
+
+- **`get_creds` printed the IBM Quantum API token to stdout on every call.** It reads the
+  token from `~/.qiskit/qiskit-ibm.json` -- a file the user deliberately keeps outside any
+  repository -- and then `print`ed the assembled dictionary, token included, moving a
+  secret from a protected location to an unprotected one: a terminal scrollback, a CI log,
+  a pasted issue report, and, because the tutorial notebooks are committed *with their
+  outputs* and published, potentially a public page. The new
+  `qbiocode.utils.ibm_account.redacted()` replaces secret values with `<redacted>` while
+  keeping the rest, so the diagnostic the print existed for -- which channel and instance
+  resolved -- still works. The caller still receives the real token; only the echo is
+  redacted.
+
+  No notebook in the tree had leaked one: the only notebook mentioning `get_creds` runs on
+  the simulator and never called it. `tests/test_credential_hygiene.py` keeps that true
+  rather than lucky, by capturing real stdout with a token present rather than by reading
+  the source -- a redaction helper that exists and is not called is the failure mode worth
+  catching.
+
+- **The untuned and tuned CatBoost paths disagreed about which bootstrap combinations
+  are legal.** `compute_catboost` had its own copy of the pinning, which set `Bernoulli`
+  whenever `subsample` appeared and then left CatBoost to raise about
+  `bagging_temperature` if both were given -- so `catboost_args` got
+  `CatBoostError: bagging temperature available for bayesian bootstrap only` for a
+  combination `gridsearch_catboost_args` rejected up front with a message naming the key.
+  It had no check at all for `subsample` under an explicitly requested Bayesian bootstrap.
+  Both paths now call `_resolve_bootstrap`, which takes the block name for its messages,
+  so the two cannot diverge again.
+
+- **`bootstrap_type` written as a `{low, high}` range was destroyed rather than refused.**
+  `list({'low': 1, 'high': 3})` is `['low', 'high']`, which satisfied the compatibility
+  checks; `build_search_space` then read the mapping as an *integer* range and proposed
+  `bootstrap_type=2`, so CatBoost failed with `Can't parse parameter "type" with value: 2`
+  -- naming neither the config entry nor the mistake. A range for the scheme is now
+  rejected by name, since it selects an algorithm rather than a number.
+
+- **QProfiler now refuses a non-binary dataset instead of warning about one.** It used to
+  log "multi-class support is experimental" and continue, but multi-class support is not
+  experimental, it is absent: `modeleval` scores every model with
+  `roc_auc_score(y_test, y_predicted)` and passes no `multi_class`, so a three-class dataset
+  raised `ValueError: multi_class must be in ('ovo', 'ovr')` a few hundred lines later, after
+  the embeddings had been computed and the models fitted. The warning invited the user into a
+  certain failure and then reported it against a parameter name they had never seen. The
+  check now raises up front, naming the dataset, its class count, its label mapping, and the
+  fact that this is a boundary of the tool rather than a defect.
+
+- **`min_data_in_leaf` was searchable but inert at CatBoost's default grow policy.**
+  CatBoost accepts it under every policy and honours it only under `Depthwise` and
+  `Lossguide`: measured, the predictions at `min_data_in_leaf=1` and `=60` are identical
+  under the default `SymmetricTree` and differ under `Depthwise`. Searching it therefore
+  multiplied the fits while every value returned the same model. `compute_catboost_opt`
+  is therefore no longer searchable: several values are **refused** with a message naming
+  `grow_policy`, rather than warned about, since a warning let the wasted fits happen anyway.
+  A single value is still accepted and passed to every trial, so the parameter stays usable
+  with `grow_policy: Depthwise` -- and stays accepted by *both* twins, because dropping it
+  from `_opt` alone would recreate the `loss_function` asymmetry, where a config key only one
+  twin takes dies on an unexpected keyword argument inside a joblib worker. The CatBoost
+  QuantumSage surrogate no longer searches it either.
+
+- **A license-gated TabPFN QPL head took the whole run down**, after the quantum
+  projection had already been computed and paid for. The availability filtering cannot
+  catch it -- the extra is installed and imports fine, and only the fit discovers the
+  checkpoint is gated. `compute_qpl` now drops that head with a warning, as it already
+  did for an unusable xgboost or catboost, and keeps the other heads' results. Relatedly,
+  every head being dropped reached `pd.concat([])` and raised "No objects to
+  concatenate"; that case now names the models and points at the warnings.
+
+- **`test_every_third_party_import_under_qbiocode_is_declared` did not read every runtime
+  tier.** It checked imports against `requirements-base.txt` and `requirements-quvine.txt`
+  only, so `tabpfn` counted as undeclared once `tabpfn_account` imported it with a real
+  `from tabpfn... import` — `compute_tabpfn` reaches it via
+  `importlib.import_module("tabpfn")`, a string the AST scan cannot see, which is why this
+  surfaced late. The tier list now includes `requirements-tabpfn.txt`, with a note that it
+  must grow with each new optional tier or the guard silently stops covering it.
+
+- **`compute_catboost_opt` did not accept `loss_function`,** though `compute_catboost`
+  did. `model_run` splats the config block into whichever twin it selects, so naming it
+  in `gridsearch_catboost_args` raised `unexpected keyword argument` inside a joblib
+  worker. It is now accepted and passed to every trial fixed rather than searched -- it
+  specifies the problem rather than tuning it.
+
+- **CatBoost wrote `catboost_info/` into the working directory on every fit.** Under
+  QProfiler that directory is shared by every joblib worker, making it both a race and
+  litter left in the user's project; a tuned run wrote it once per trial per fold.
+  `allow_writing_files=False` is now passed to every CatBoost estimator the package
+  builds -- the learners, the QPL head and the Sage surrogate.
+
+- **CatBoost narrated one line per boosting iteration.** Silenced independently of
+  QBioCode's own `verbose` flag, which selects the one-line result summary and had been
+  distinct from CatBoost's identically-named parameter.
+
+- **CatBoost's `predict()` returns an (n, 1) column under the `MultiClass` loss**,
+  reachable on a two-class target via `loss_function`. Flattened to the 1-D shape every
+  other learner returns. This is a consistency fix rather than a crash fix: scikit-learn
+  1.9 silently squeezes a column vector, so the metrics were already correct -- but the
+  array is also stored in the results frame as `y_predicted_<model>`, and leaving its
+  shape to depend on undocumented squeezing behaviour is a latent trap for anything
+  reading that column.
+
+### Changed
+
+- **`compute_qpl`'s default `classical_models` is now
+  `['rf', 'mlp', 'svc', 'lr', 'xgb', 'catboost']`.** `tabpfn` is accepted but
+  deliberately not a default: defaulting a license-gated optional extra on would make
+  every ordinary QPL run warn about something the user never asked for. An unavailable
+  head is dropped with a warning rather than wasting the quantum projection that has
+  already been computed.
+
+- **`compute_qpl` reads `best_params_` defensively.** Every other head is a
+  `RandomizedSearchCV`; the TabPFN head is fitted bare, because wrapping it as the
+  others are would cost 200 transformer forward passes per projection to choose between
+  near-identical inference settings. It reports `get_params()` instead.
+
+#### Optuna tuning for the quantum classifiers
+
+- **`qsvc`, `vqc`, `qnn`, `pqk` and `qpl` can now be tuned**, through the same
+  `gridsearch_<model>_args` blocks as the classical models. Previously they had no tuning
+  path at all: comparing `Z` against `ZZ` at two `reps` meant writing four config files
+  and diffing four runs. Tunable per model are `encoding`, `entanglement`, `reps` and
+  `primitive`, plus `C`/`gamma`/`pegasos` for QSVC and `ansatz_type`/`local_optimizer`/
+  `maxiter` for VQC and QNN. There is no `n_qubits` to tune -- the qubit count follows
+  from the width of the data reaching the model. Guarded by `tests/test_quantum_tuning.py`.
+
+- **Off unless asked for twice: `grid_search: True` *and* `tune_quantum: True`.** A
+  quantum fit builds an n-by-n fidelity kernel by circuit simulation, so tuning
+  multiplies a quantum model's cost by the trial budget. Had it switched on with
+  `grid_search` alone, every existing config naming a quantum model would have become an
+  order of magnitude slower on upgrade with no change on the user's part. `tune_quantum`
+  without `grid_search` is an error rather than a silent no-op, and a quantum model with
+  no `gridsearch_<model>_args` block is named rather than skipped.
+
+- **A quantum candidate is scored once, not `cross_validation` times.** Each trial is
+  scored on a single stratified holdout carved out of the training data
+  (`validation_split`, default 0.25); k-fold would multiply an already expensive search
+  by k. The caller's test set is never touched by the search. The budget is
+  `n_trials_quantum` (default 10) rather than `n_trials` (50).
+
+- **Tuning against real hardware is refused** unless `allow_hardware_tuning: True` is
+  set. Every trial would be a separate queued job billed against the user's instance,
+  and the failure mode is silent: the run simply never appears to finish.
+
+- **A hyperparameter combination the quantum stack cannot build costs a trial, not the
+  run.** Not every `(encoding, entanglement, primitive)` triple is constructible; a
+  failing trial is pruned and reported in a summary warning. If *every* trial fails the
+  error says so and points at the config block, rather than reporting an empty study.
+
+- **New tutorial: `tutorial/Hyperparameter_Tuning/optuna_vs_gridsearch.ipynb`**, which
+  times the exhaustive sweep against Optuna on the shipped blocks (14x apart on the
+  committed run, at indistinguishable accuracy), demonstrates range syntax, and tunes a
+  QSVC. It scales with `scale_train_test` *after* splitting, and says why: fitting a
+  scaler on the full matrix leaks test-set statistics into training and quietly flatters
+  every number in the notebook. It also reports a tuned QSVC losing to the untuned
+  default and explains that too -- six candidates selected on an 11-sample validation
+  holdout is selection on noise -- rather than presenting tuning as a free win. Executed
+  end to end by `tests/integration/test_notebook_execution.py`. Its first cell prints which
+  QBioCode actually answered, and its results reader accepts the pre-rename column name and
+  explains what finding it means -- reading only `BestParams_Tuned` raised a bare
+  `KeyError` when the notebook ran on a kernel belonging to a different checkout, which is
+  easy to hit because VS Code only auto-discovers a `.venv` at the workspace root.
+
+### Fixed
+
+- **A budget below one trial blamed the search space.** `n_trials: 0` (or a negative
+  value) ran nothing, so `study.best_params` raised Optuna's "No trials are completed
+  yet" on the classical path, and on the quantum path the all-trials-failed branch caught
+  it first and reported that *every trial had failed* and the `gridsearch_<model>_args`
+  block was probably unbuildable -- pointing at a config block that was perfectly fine.
+  The budget is now validated up front and the message names the value it was given.
+
+- **An invalid `validation_split` was reported against `test_size`.** A value of 0, 1 or
+  a negative number reached `train_test_split` and surfaced as
+  `InvalidParameterError: The 'test_size' parameter ... must be a float in the range
+  (0.0, 1.0)` -- naming a parameter that appears nowhere in a QBioCode config. It is now
+  checked against its own name.
+
+- **`tuner: grid` silently ran Optuna for the quantum models.** There is no
+  exhaustive-grid engine for them -- a quantum candidate is scored by running the whole
+  compute function, not an estimator `GridSearchCV` can drive -- so `tuner: grid` with
+  `tune_quantum: True` quietly did something other than what was asked, which makes the
+  resulting numbers impossible to interpret later. It now warns, names the models
+  affected, and says how to opt out.
+
+- **The shipped `gridsearch_mlp_args` buried its own output in warnings.** Its
+  `hidden_layer_sizes` is `[[20], [50], [100]]`, and a categorical choice Optuna cannot
+  persist makes it warn once per trial: "Choices for a categorical distribution should be
+  a tuple of None, bool, int, float and str for persistent storage but contains [20]
+  which is of type list." The studies here are created in memory and discarded when the
+  search returns, so the limitation the warning describes cannot be reached; it is now
+  suppressed by message, narrowly and only around the search. The values are still
+  reported back exactly as configured.
+
+- **Every config key is now checked against the documentation.** `tests/test_docs_structure.py`
+  fails when `config.yaml` offers a key that appears nowhere under `docs/source`. Adding a
+  key and forgetting the docs is otherwise invisible -- the yaml parses and the only
+  symptom is a user who cannot find out what the key does. It caught five
+  `gridsearch_<quantum model>_args` block names, both projection-cache directories and the
+  `BestParams_Tuned` column, all of which are now documented; ten pre-existing keys are
+  recorded as debt rather than exempted.
+
+- **QPL's projection cache was keyed on `data_key` alone, so changing a quantum
+  hyperparameter silently reused the wrong projection.** `compute_qpl` cached its
+  projected feature matrix under a name built only from `data_key`, in a hardcoded
+  `qpl_projections` directory. Changing `encoding`, `entanglement`, `reps` or `primitive`
+  and rerunning loaded the projection computed for the *previous* settings: the new
+  circuit was never run and the reported result described the old one. The name now
+  includes a fingerprint of the settings that change the circuit, the row count is
+  validated on load with both numbers named, and the directory can be redirected with
+  `qpl_projection_dir` -- matching what `compute_pqk` already did. Tuning made this
+  acute rather than merely wrong: every trial after the first would have scored the same
+  cached projection, so the search would have compared a hyperparameter against itself.
+  Guarded by `tests/test_quantum_tuning.py::TestTheQplProjectionCache`.
+
+- **`compute_qsvc_opt` reports a `local_optimizer` grid instead of silently searching
+  it.** `compute_qsvc` accepts `local_optimizer` and never reads it -- the kernel is
+  fitted by libsvm, not an optimizer -- so a grid over it would have multiplied the
+  trials while every one returned the same model. Same treatment as `bootstrap` on
+  XGBoost.
+
+### Changed
+
+#### Optuna replaces the exhaustive grid as the default hyperparameter search
+
+- **`grid_search: True` now tunes with Optuna instead of fitting every combination.**
+  `gridsearch_rf_args` as shipped is 4x2x4x3x3x2 = 576 combinations, so a single random
+  forest cost 2,880 fits at `cross_validation: 5` — and the sweep was blind, spending as
+  much time in a hopeless corner as in a promising one. The new default spends a fixed
+  `n_trials` (50) steered by Optuna's TPE sampler; on the shipped RF block that is 6s
+  against 96s for the full grid. The exhaustive sweep is still reachable with
+  `tuner: grid`, which is what to use when reproducing a number published against it.
+  Guarded by `tests/test_grid_search_partial.py`, which now runs all seven `_opt`
+  learners under both engines.
+
+- **A hyperparameter can now be given as a range, not just a list of decades.**
+  `C: [1.e-03, 1.e-02, ... 1.e+03]` could only ever propose a power of ten; the same
+  parameter written `C: {low: 1.0e-3, high: 1.0e+2, log: true}` is sampled continuously,
+  so 3.7 is reachable. Integer bounds give integer values, `log: true` gives a log scale
+  and `step: n` fixed spacing. **Existing configs are unchanged** — a list is still a
+  list, searched as a categorical choice — and the two forms mix freely inside one block.
+  Ranges require `tuner: optuna`; under `tuner: grid` every entry must be a list.
+  `build_search_space` and `build_param_grid` are deliberately fed the same candidate
+  dict and agree on which entries count as "not tuned", so switching `tuner` cannot
+  change *which* hyperparameters are searched. See `qbiocode.learning._tuning`.
+
+- **A malformed range names the model and the hyperparameter.** `{low: 10, high: 1}`,
+  a log scale starting at zero, `log` together with `step`, an unrecognised key, or
+  non-numeric bounds are all reported against the config entry that caused them, rather
+  than surfacing later as an Optuna complaint about an anonymous distribution.
+  Guarded by `tests/test_optuna_tuning.py`.
+
+- **An unknown `tuner` is rejected at validation.** A misspelt value would otherwise
+  fall through to the Optuna branch inside every `_opt` function, so a config asking
+  for the exhaustive grid silently did not get it.
+
+- **`cross_validation` is no longer a required key on the tuning path.**
+  `args["cross_validation"]` was an unguarded lookup reached only when `grid_search` was
+  on, so tuning from a config that omitted it died in `model_run` rather than at
+  validation. It now defaults to 5.
+
+- **The tuned-parameter results column is `BestParams_Tuned`, was
+  `BestParams_GridSearch`.** The old name claimed an engine that is no longer the
+  default. Every reader — `qbiocode.utils.qc_winner_finder` and `QuantumSage` — accepts
+  both names, so `ModelResults.csv` files written before this change still load.
+  `qc_winner_finder` previously assumed the absence of `Model_Parameters` implied the
+  presence of `BestParams_GridSearch`, which made any third name a `KeyError` raised
+  from inside `groupby`; it now looks for each name it knows and says which columns it
+  found if none are present. Guarded by `tests/test_sage_contract.py`.
+
+
 ## [0.2.0] - 2026-09-10
 
 ### Added
