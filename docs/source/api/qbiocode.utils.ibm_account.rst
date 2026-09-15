@@ -7,7 +7,7 @@ qbiocode.utils.ibm_account module
 .. currentmodule:: qbiocode.utils.ibm_account
 
 .. automodule:: qbiocode.utils.ibm_account
-    :members: get_creds, instantiate_runtime_service
+    :members: get_creds, instantiate_runtime_service, redacted
     :undoc-members:
     :show-inheritance:
     :member-order: bysource
@@ -22,6 +22,7 @@ qbiocode.utils.ibm_account module
 
         get_creds
         instantiate_runtime_service
+        redacted
 
 
 

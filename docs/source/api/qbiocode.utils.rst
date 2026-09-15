@@ -23,6 +23,7 @@ qbiocode.utils package
        qbiocode.utils.ibm_account
        qbiocode.utils.qc_winner_finder
        qbiocode.utils.qutils
+       qbiocode.utils.tabpfn_account
        qbiocode.utils.tutorial_data
 
 

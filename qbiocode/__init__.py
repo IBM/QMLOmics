@@ -81,15 +81,23 @@ from .evaluation.model_run import model_run
 
 # ====== Import learning functions ======
 from .learning.compute_dt import compute_dt, compute_dt_opt
+from .learning.compute_catboost import compute_catboost, compute_catboost_opt
 from .learning.compute_lr import compute_lr, compute_lr_opt
 from .learning.compute_mlp import compute_mlp, compute_mlp_opt
 from .learning.compute_nb import compute_nb, compute_nb_opt
-from .learning.compute_pqk import compute_pqk
-from .learning.compute_qnn import compute_qnn
-from .learning.compute_qsvc import compute_qsvc
+# Both twins of every quantum learner, matching the classical ones. The `_opt`
+# variants and compute_qpl are all reachable through `model_run`'s dispatch table, so
+# leaving them off the package root made 6 of the 28 dispatchable functions importable
+# only by their private module path -- an inconsistency rather than a decision, since
+# every classical learner exports both twins. Guarded by
+# tests/test_model_contract_matrix.py.
+from .learning.compute_pqk import compute_pqk, compute_pqk_opt
+from .learning.compute_qnn import compute_qnn, compute_qnn_opt
+from .learning.compute_qpl import compute_qpl, compute_qpl_opt
+from .learning.compute_qsvc import compute_qsvc, compute_qsvc_opt
 from .learning.compute_rf import compute_rf, compute_rf_opt
 from .learning.compute_svc import compute_svc, compute_svc_opt
-from .learning.compute_vqc import compute_vqc
+from .learning.compute_vqc import compute_vqc, compute_vqc_opt
 
 # compute_xgb.py guards the xgboost import itself and both functions raise an
 # actionable ImportError -- naming libomp and the exact reinstall command -- when
@@ -98,6 +106,13 @@ from .learning.compute_vqc import compute_vqc
 # "'NoneType' object is not callable" and would additionally hide a genuine
 # breakage in the module (a typo, a broken sibling import) as a missing extra.
 from .learning.compute_xgb import compute_xgb, compute_xgb_opt
+
+# TabPFN is an optional extra ([tabpfn]) and its module imports `tabpfn` lazily, so
+# this import costs nothing when the extra is absent and -- importantly -- does not
+# pull torch in, which would undo preload_openmp_libraries() above. Both functions
+# raise an actionable ImportError naming the extra and the license step when called
+# without it.
+from .learning.compute_tabpfn import compute_tabpfn, compute_tabpfn_opt
 
 # ====== Import helper functions ======
 from .utils.dataset_checkpoint import checkpoint_restart
@@ -121,6 +136,8 @@ __all__ = [
     # Version
     "__version__",
     # Classical ML algorithms
+    "compute_catboost",
+    "compute_catboost_opt",
     "compute_svc",
     "compute_svc_opt",
     "compute_dt",
@@ -133,13 +150,21 @@ __all__ = [
     "compute_rf_opt",
     "compute_xgb",
     "compute_xgb_opt",
+    "compute_tabpfn",
+    "compute_tabpfn_opt",
     "compute_mlp",
     "compute_mlp_opt",
     # Quantum ML algorithms
     "compute_qnn",
+    "compute_qnn_opt",
     "compute_qsvc",
+    "compute_qsvc_opt",
     "compute_vqc",
+    "compute_vqc_opt",
     "compute_pqk",
+    "compute_pqk_opt",
+    "compute_qpl",
+    "compute_qpl_opt",
     # Embeddings
     "get_embeddings",
     "is_transductive",

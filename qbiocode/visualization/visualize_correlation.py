@@ -15,6 +15,9 @@ import seaborn as sns
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from scipy.stats import spearmanr
+
+from qbiocode.evaluation.dataset_evaluation import complexity_feature_columns
+from qbiocode.evaluation.mfe_features import MFE_COLUMN_PREFIX
 from sklearn.metrics import r2_score
 from sklearn.preprocessing import MinMaxScaler
 
@@ -168,7 +171,7 @@ def compute_results_correlation(results_df, correlation="spearman", thresh=0.7):
     The function returns the input DataFrame with additional columns for datatype and model_embed_datatype,
     as well as a new DataFrame containing the computed correlations between metrics and features.
     The correlation is computed for each model-embedding-dataset combination, and the results are aggregated.
-    The features considered for correlation include various data characteristics such as 'Feature_Samples_ratio', 'Intrinsic_Dimension', etc.
+    The features correlated are whichever dataset-complexity columns the table carries, as identified by :func:`qbiocode.evaluation.dataset_evaluation.complexity_feature_columns` -- the ``mfe.``-prefixed pyMFE block, the ``task.``-prefixed target-spectrum block, and the natively-computed measures, or the legacy column names for a table written before the pyMFE integration.
     The metrics considered for correlation include 'accuracy', 'f1_score', 'time', and 'auc'.
     The function also calculates the median metric value and the fraction of instances above the specified threshold for each combination.
     The resulting DataFrame contains the model-embedding-dataset, metric, feature, median metric value, fraction above threshold, and the computed correlation.
@@ -195,29 +198,20 @@ def compute_results_correlation(results_df, correlation="spearman", thresh=0.7):
     ]
 
     correlations = []
-    features = [
-        "Feature_Samples_ratio",
-        "Intrinsic_Dimension",
-        "Condition number",
-        "Fisher Discriminant Ratio",
-        "Total Correlations",
-        "Mutual information",
-        "# Non-zero entries",
-        "# Low variance features",
-        "Variation",
-        "std_var",
-        "Coefficient of Variation %",
-        "std_co_of_v",
-        "Skewness",
-        "std_skew",
-        "Kurtosis",
-        "std_kurt",
-        "Mean Log Kernel Density",
-        "Isomap Reconstruction Error",
-        "Fractal dimension",
-        "Entropy",
-        "std_entropy",
-    ]
+    # Derived from the table, not hardcoded. This list used to name the 21 columns of
+    # the pre-pyMFE complexity block and skip any that were absent -- so once
+    # QProfiler's block became pyMFE-backed it would have silently correlated the ten
+    # surviving names and none of the new ones, narrowing the analysis with nothing in
+    # the output saying so.
+    features = complexity_feature_columns(results_df.columns)
+    if not features:
+        logger.warning(
+            "No dataset-complexity columns recognized in results_df, so no "
+            "feature correlations will be computed. Expected either %s-prefixed "
+            "columns from qbiocode.evaluation.evaluate() or the legacy complexity "
+            "column names.",
+            MFE_COLUMN_PREFIX,
+        )
     metrics = ["accuracy", "f1_score", "time", "auc"]
 
     keys = list(set(results_df["model_embed_datatype"]))

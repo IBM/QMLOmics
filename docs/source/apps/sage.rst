@@ -41,14 +41,14 @@ QSage implements a meta-learning approach using regression models to predict per
 
       **Input:** Historical data from :doc:`QProfiler <profiler>`
       
-      - Data complexity metrics (23 features)
+      - Data complexity metrics (125 features; a legacy 23-feature table is also accepted)
       - Model performance (accuracy, F1, AUC)
       - Multiple datasets and models
       
       **Process:** Train sub-sages for each model
       
       - One predictor per model per metric
-      - Random Forest or MLP regressor
+      - Random Forest, MLP, XGBoost or CatBoost regressor
       - Cross-validated hyperparameter tuning
 
    .. grid-item-card:: 🔮 Prediction Phase
@@ -56,7 +56,7 @@ QSage implements a meta-learning approach using regression models to predict per
 
       **Input:** New dataset complexity metrics
       
-      - Same 23 features from :doc:`QProfiler <profiler>`
+      - The same features from :doc:`QProfiler <profiler>`
       - No model training required
       
       **Output:** Performance predictions
@@ -81,34 +81,50 @@ The Meta-Learning Pipeline
 Data Complexity Features
 -------------------------
 
-QSage uses 23 complexity features extracted by :doc:`QProfiler <profiler>`. For detailed descriptions of each metric, see the :ref:`Data Complexity Measures <data-complexity-measures>` section in the QProfiler documentation.
+QSage trains on the complexity features extracted by :doc:`QProfiler <profiler>`. For
+detailed descriptions of each metric, see the :ref:`Data Complexity Measures
+<data-complexity-measures>` section in the QProfiler documentation.
 
-**Dimensionality (5 features)**
-   - Number of features, samples, feature-to-sample ratio
-   - Intrinsic dimension
-   - Fractal dimension
+**QSage does not name its feature columns -- it detects them.** There are two schemas
+in circulation, and ``QuantumSage`` reads either:
 
-**Statistical Properties (10 features)**
-   - Variance (mean, std)
-   - Coefficient of variation (mean, std)
-   - Skewness (mean, std)
-   - Kurtosis (mean, std)
-   - Nonzero entries
-   - Low variance feature count
+``pymfe`` (current)
+   125 features: 10 computed natively by
+   :mod:`qbiocode.evaluation.dataset_evaluation` plus 115 pyMFE columns carrying the
+   ``mfe.`` prefix. Anything QProfiler writes today is in this schema.
 
-**Separability (5 features)**
-   - Fisher Discriminant Ratio
-   - Total correlations
-   - Mutual information
-   - Mean log kernel density
-   - Isomap reconstruction error
+``legacy``
+   The 23 hand-rolled columns QProfiler wrote before the pyMFE integration. Still
+   supported because ``tutorial/QSage/data/qprofiler_benchmarks.csv`` -- the benchmark
+   table the :doc:`QSage tutorial <../tutorials/QSage/qsage>` trains on -- is in it and
+   cannot be regenerated from the repository.
 
-**Matrix Properties (2 features)**
-   - Condition number
-   - Entropy (mean, std)
+``detect_complexity_schema`` decides from the column names, so a results table trains
+without the caller declaring anything. Read the detected schema off
+``sage._complexity_schema`` and the columns off ``sage._columns_data_features``.
 
-**Information Theory (1 feature)**
-   - Entropy
+What the current schema adds over the legacy one:
+
+**Classification complexity (Lorena et al. 2019)**
+   Feature-overlap (F), linearity (L), neighbourhood (N), dimensionality (T) and
+   class-imbalance (C) families -- measures of how hard the classes are to separate,
+   which the legacy block had none of.
+
+**Landmarking**
+   The accuracy of cheap learners (1-NN, naive Bayes, LDA, single tree nodes) on the
+   dataset itself. The legacy block had none of these either, and they matter most
+   here: a landmark is a direct cheap measurement of the very thing QSage predicts,
+   rather than a description of the data that has to be mapped to it.
+
+**Model-based, clustering and concept measures**
+   Decision-tree shape, cluster-validity indices, and label variability among near
+   neighbours.
+
+**Derived feature**
+   ``SLGH`` (Scaled Latent Geometric Hardness) is appended by QSage itself from
+   ``Intrinsic_Dimension``, ``Fisher Discriminant Ratio`` and the sample count. Both
+   schemas retain all three, so the definition is unchanged. It is derived at both
+   training and prediction time, so callers neither supply nor pre-compute it.
 
 .. seealso::
    For mathematical formulas, interpretations, and scientific references for each complexity measure, see :doc:`QProfiler Data Complexity Measures <profiler>`.
@@ -146,7 +162,10 @@ This trains QSage on historical QProfiler data and generates predictions for all
 **Optional Arguments:**
 
 - ``--seed, -s``: Random seed for reproducibility (default: 42)
-- ``--model-type``: Type of sub-sage model to train: ``rf`` (Random Forest) or ``mlp`` (MLP). Default: ``random_forest``. **Only one type can be trained per run.**
+- ``--model-type``: Type of sub-sage model to train: ``rf`` (Random Forest), ``mlp`` (MLP),
+  ``xgboost``/``xgboost_optuna`` (XGBoost tuned with Optuna) or ``catboost``/``catboost_optuna``
+  (CatBoost tuned with Optuna). Default: ``random_forest``. **Only one type can be trained
+  per run.**
 - ``--test-size``: Proportion of data to use for testing (default: 0.2)
 
 **Examples**
@@ -197,7 +216,7 @@ QSage is designed to work seamlessly with QProfiler output. The CSV files genera
 
 The ``compiled_results.csv`` file from QProfiler contains:
 
-- All data complexity metrics (23 features)
+- All data complexity metrics (125 features in the current schema)
 - Model performance metrics (accuracy, F1, AUC)
 - Metadata (dataset names, embeddings, models)
 
@@ -292,7 +311,8 @@ Configuration Options
 
    sage.train_sub_sages(
        test_size=0.2,           # Train/test split ratio
-       sage_type='random_forest' # 'random_forest' or 'mlp'
+       sage_type='random_forest' # 'random_forest', 'mlp',
+                                 # 'xgboost_optuna' or 'catboost_optuna'
    )
 
 **Prediction Parameters**
@@ -308,8 +328,9 @@ Configuration Options
 
 QSage can predict performance for:
 
-- **Classical:** SVC, Decision Tree, Logistic Regression, Naive Bayes, Random Forest, MLP
-- **Quantum:** QSVC, VQC, QNN, PQK
+- **Classical:** SVC, Decision Tree, Logistic Regression, Naive Bayes, Random Forest, MLP,
+  XGBoost, CatBoost, TabPFN
+- **Quantum:** QSVC, VQC, QNN, PQK, QPL
 
 Understanding Predictions
 -------------------------
@@ -370,6 +391,11 @@ Best Practices
 
 - **Random Forest** (default): Better for non-linear relationships, more robust
 - **MLP**: Can capture complex patterns, requires more data
+- **XGBoost-Optuna**: Gradient boosting with a Bayesian hyperparameter search; usually the
+  strongest on continuous targets
+- **CatBoost-Optuna**: The same idea with a different booster. On the small, wide tables
+  QProfiler produces the two often disagree, so it is worth training both and comparing the
+  reported R-squared rather than assuming either wins
 
 **Prediction Confidence**
 
@@ -420,8 +446,8 @@ For each model :math:`M` and metric :math:`m`:
    \hat{y}_{M,m} = f_{\theta}(\mathbf{x}_{\text{complexity}})
 
 where:
-   - :math:`\mathbf{x}_{\text{complexity}}` = 23-dimensional complexity feature vector
-   - :math:`f_{\theta}` = Random Forest or MLP regressor
+   - :math:`\mathbf{x}_{\text{complexity}}` = complexity feature vector (126-dimensional in the current schema: 125 measures plus the derived ``SLGH``)
+   - :math:`f_{\theta}` = Random Forest, MLP, XGBoost or CatBoost regressor
    - :math:`\hat{y}_{M,m}` = Predicted performance metric
 
 **Confidence-Weighted Ranking**

@@ -9,7 +9,8 @@ from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier
 
 # ====== Additional local imports ======
 from qbiocode.learning._grid import build_param_grid
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.learning._tuning import build_search_space, run_study
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 
 # ====== Scikit-learn imports ======
 
@@ -112,8 +113,21 @@ def compute_rf(
     model_params = model_fit.get_params()
     # Validate the model in test dataset and calculate accuracy
     y_predicted = rf.predict(X_test)
+    # `auc` is a ranking metric and is computed from these scores alone -- passing
+    # y_predicted, as this used to, silently reported balanced accuracy instead.
+    # OneVsOneClassifier publishes no predict_proba, so what comes back here is its
+    # decision_function; see extract_binary_scores for why that is a real ranking on a
+    # binary target, and None (recorded as NaN) when it is not.
+    y_score = extract_binary_scores(rf, X_test)
     return modeleval(
-        y_test, y_predicted, beg_time, model_params, args, model=model, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        model_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -133,15 +147,20 @@ def compute_rf_opt(
     min_samples_split=None,
     n_estimators=None,
     random_state=None,
+    *,
+    tuner="optuna",
+    n_trials=50,
 ):
     """
     This function also generates a model using a Random Forest (RF) Classifier method as implemented in
     `scikit-learn <https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestClassifier.html>`__.
-    The difference here is that this function runs a grid search. The range of the grid search for each parameter is specified in the config.yaml file. The
+    The difference here is that this function tunes the model's hyperparameters.
+    The values or ranges searched for each parameter are specified in the config.yaml file,
+    and ``tuner`` selects the search engine (Optuna by default). The
     combination of parameters that led to the best performance is saved and returned as best_params, which can then be used on similar
-    datasets, without having to run the grid search.
+    datasets, without having to repeat the search.
     The model is trained on the training dataset and validated on the test dataset. The function returns the evaluation of the model
-    on the test dataset, including accuracy, AUC, F1 score, and the time taken to train and validate the model across the grid search.
+    on the test dataset, including accuracy, AUC, F1 score, and the time taken to train and validate the model across the search.
     This function is designed to be used in a supervised learning context, where the goal is to classify data points.
 
     Args:
@@ -153,14 +172,22 @@ def compute_rf_opt(
         verbose (bool): If True, prints additional information during execution.
         cv (int): Number of cross-validation folds, default is 5.
         model (str): Name of the model being used, default is 'Random Forest'.
-        bootstrap (list): List of bootstrap options for grid search.
-        max_depth (list): List of maximum depth options for grid search.
-        max_features (list): List of maximum features options for grid search.
-        min_samples_leaf (list): List of minimum samples leaf options for grid search.
-        min_samples_split (list): List of minimum samples split options for grid search.
-        n_estimators (list): List of number of estimators options for grid search.
+        bootstrap (list): List of bootstrap options for the search.
+        max_depth (list): List of maximum depth options for the search.
+        max_features (list): List of maximum features options for the search.
+        min_samples_leaf (list): List of minimum samples leaf options for the search.
+        min_samples_split (list): List of minimum samples split options for the search.
+        n_estimators (list): List of number of estimators options for the search.
         random_state (int or None): Seed for the estimator's own randomness. QProfiler fills this in from the run's ``seed`` so two runs at one seed agree; None leaves the estimator drawing from the global RNG.
 
+        tuner (str): Which search to run. ``'optuna'`` (default) spends ``n_trials`` on
+            Optuna's TPE sampler, which also allows a hyperparameter to be given as a
+            ``{low, high}`` range rather than a list. ``'grid'`` restores the exhaustive
+            ``GridSearchCV`` sweep over every combination.
+        n_trials (int): Trial budget when ``tuner='optuna'``, default is 50. Lowered
+            automatically when the configured values describe fewer distinct
+            combinations than that, so a small block does not re-evaluate the same
+            models.
     Returns:
         modeleval (dict): A dictionary containing the evaluation metrics of the model, including accuracy, AUC, F1 score, and the time taken for training and validation.
 
@@ -170,27 +197,57 @@ def compute_rf_opt(
     # Only the hyperparameters actually supplied. Passing all of them meant a
     # config that named a subset died in sklearn on the first one it left at its
     # `[]` default; see qbiocode.learning._grid.
-    params = build_param_grid(
-        "rf",
-        {
-            "n_estimators": n_estimators,
-            "max_features": max_features,
-            "max_depth": max_depth,
-            "min_samples_split": min_samples_split,
-            "min_samples_leaf": min_samples_leaf,
-            "bootstrap": bootstrap,
-        },
-    )
+    candidates = {
+        "n_estimators": n_estimators,
+        "max_features": max_features,
+        "max_depth": max_depth,
+        "min_samples_split": min_samples_split,
+        "min_samples_leaf": min_samples_leaf,
+        "bootstrap": bootstrap,
+    }
 
-    # Perform Grid Search to find the best parameters
-    grid_search = GridSearchCV(RandomForestClassifier(random_state=random_state), param_grid=params, cv=cv)
-    grid_search.fit(X_train, y_train)
-
-    # Get the best parameters and use them to create the final model
-    best_params = grid_search.best_params_
+    # Optuna by default; the exhaustive grid stays reachable so a number published
+    # against it can still be reproduced. Both engines are handed the same
+    # `candidates`, so switching `tuner` never changes *which* hyperparameters are
+    # searched -- only how the search spends its fits.
+    if tuner == "grid":
+        search = GridSearchCV(
+            RandomForestClassifier(random_state=random_state),
+            param_grid=build_param_grid("rf", candidates),
+            cv=cv,
+        )
+        search.fit(X_train, y_train)
+        best_params = search.best_params_
+    else:
+        best_params = run_study(
+            RandomForestClassifier,
+            build_search_space("rf", candidates),
+            X_train,
+            y_train,
+            cv=cv,
+            n_trials=n_trials,
+            seed=random_state,
+            fixed={"random_state": random_state},
+        )
     best_rf = RandomForestClassifier(**best_params, random_state=random_state)
     best_rf.fit(X_train, y_train)
 
     # Make predictions and calculate accuracy
     y_predicted = best_rf.predict(X_test)
-    return modeleval(y_test, y_predicted, beg_time, best_params, args, model=model, verbose=verbose)
+    # Fitted unwrapped, so predict_proba is available. `auc` is computed from these
+    # scores alone; see extract_binary_scores.
+    y_score = extract_binary_scores(best_rf, X_test)
+    return modeleval(
+        y_test,
+        y_predicted,
+        beg_time,
+        best_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
+        # This function IS the tuned branch, so it states so rather than letting
+        # modeleval infer it from the label: a DIRECT call leaves `model` at its
+        # display-name default ('Decision Tree'), which carries no _opt marker.
+        tuned=True,
+    )

@@ -15,8 +15,10 @@ qbiocode.evaluation package
 
        qbiocode.evaluation.dataset_evaluation
        qbiocode.evaluation.graph_evaluation
+       qbiocode.evaluation.mfe_features
        qbiocode.evaluation.model_evaluation
        qbiocode.evaluation.model_run
+       qbiocode.evaluation.task_spectrum
 
 
 

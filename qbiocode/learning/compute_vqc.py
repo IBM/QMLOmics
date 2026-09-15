@@ -11,7 +11,12 @@ from qiskit_machine_learning.algorithms.classifiers import VQC
 import qbiocode.utils.qutils as qutils
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
+from qbiocode.learning._tuning import (
+    build_search_space,
+    record_tuned_params,
+    run_function_study,
+)
 
 
 def compute_vqc(
@@ -21,7 +26,7 @@ def compute_vqc(
     y_test,
     args,
     verbose=False,
-    model="VQC",
+    model="vqc",
     data_key="",
     local_optimizer: Literal["COBYLA", "L_BFGS_B", "GradientDescent"] = "COBYLA",
     maxiter=100,
@@ -107,10 +112,128 @@ def compute_vqc(
     }
     model_params = hyperparameters
     y_predicted = vqc.predict(X_test)
+    # `auc` is computed from these scores alone, never from y_predicted. VQC inherits
+    # NeuralNetworkClassifier.predict_proba, which is the raw SamplerQNN forward pass --
+    # one column per class, already normalised over the measured bitstrings, so it is a
+    # genuine ranking rather than a re-reading of the argmax that produced y_predicted.
+    # Scored before the session is closed: the forward pass runs the circuit again.
+    y_score = extract_binary_scores(vqc, X_test)
 
     if not isinstance(session, type(None)):
         session.close()
 
     return modeleval(
-        y_test, y_predicted, beg_time, model_params, args, model=model, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        model_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
     )
+
+
+def compute_vqc_opt(
+    X_train,
+    X_test,
+    y_train,
+    y_test,
+    args,
+    verbose=False,
+    # '_opt', so a DIRECT call is self-describing. model_run always passes
+    # model='vqc_opt' explicitly, but a caller using the default would otherwise
+    # produce a row labelled as untuned -- and modeleval infers `tuned` from this
+    # very string, so the label and the parameter column would BOTH be wrong.
+    model="vqc_opt",
+    data_key="",
+    local_optimizer=None,
+    maxiter=None,
+    encoding=None,
+    entanglement=None,
+    reps=None,
+    primitive=None,
+    ansatz_type=None,
+    *,
+    n_trials=10,
+    validation_split=0.25,
+):
+    """Tune VQC's hyperparameters with Optuna, then run it at the best ones found.
+
+    The quantum counterpart of the classical ``compute_*_opt`` functions, and driven by
+    the same ``gridsearch_vqc_args`` config block -- a list is a choice, a
+    ``{low, high}`` mapping is a range. It differs in how a candidate is scored: a
+    quantum fit builds an n-by-n fidelity kernel by circuit simulation, so scoring by
+    k-fold cross-validation would multiply an already expensive search by k. Each trial
+    is scored once, on a stratified holdout carved out of ``X_train``; the caller's test
+    set is never touched by the search.
+
+    Only reachable when the config sets both ``grid_search: True`` and
+    ``tune_quantum: True``. Tuning against a real device is refused unless
+    ``allow_hardware_tuning: True`` -- every trial would be a queued job.
+
+    Args:
+        X_train (array-like): Training data features. Split again internally to score
+            candidates; the final model is refitted on all of it.
+        X_test (array-like): Test data features, used only for the final evaluation.
+        y_train (array-like): Training data labels.
+        y_test (array-like): Test data labels.
+        args (dict): Run configuration. ``backend``, ``shots`` and ``seed`` are read
+            from it by the underlying quantum function.
+        verbose (bool): If True, prints additional information during execution.
+        model (str): Name of the model being used, default is 'VQC'.
+        data_key (str): Key for identifying the dataset.
+        local_optimizer (list or dict): Optimizers to search ('COBYLA', 'L_BFGS_B', 'GradientDescent'). None leaves it at the default.
+        maxiter (list or dict): Optimizer iteration budgets to search. None leaves it at the default.
+        encoding (list or dict): Feature-map values to search ('Z', 'ZZ', 'P'). None leaves it at the default.
+        entanglement (list or dict): Entanglement patterns to search ('linear', 'full', ...). None leaves it at the default.
+        reps (list or dict): Feature-map repetition counts to search. None leaves it at the default.
+        primitive (list or dict): Qiskit primitives to search ('sampler', 'estimator'). None leaves it at the default.
+        ansatz_type (list or dict): Ansatz types to search ('amp', ...). None leaves it at the default.
+        n_trials (int): Trial budget, default 10 -- an order of magnitude below the
+            classical default because each trial is a quantum fit. Lowered
+            automatically when the configured values describe fewer combinations.
+        validation_split (float): Fraction of the training data held out to score
+            candidates on, default 0.25.
+
+    Returns:
+        modeleval (dict): The evaluation of the model at the best hyperparameters found,
+        with the tuned values recorded in the results frame and the reported time
+        covering the whole search rather than only the final fit.
+    """
+    beg_time = time.time()
+
+    candidates = {
+        "local_optimizer": local_optimizer,
+        "maxiter": maxiter,
+        "encoding": encoding,
+        "entanglement": entanglement,
+        "reps": reps,
+        "primitive": primitive,
+        "ansatz_type": ansatz_type,
+    }
+
+    best_params = run_function_study(
+        compute_vqc,
+        build_search_space("vqc", candidates),
+        X_train,
+        y_train,
+        args,
+        model="vqc",
+        n_trials=n_trials,
+        seed=args.get("seed") if isinstance(args, dict) else None,
+        validation_split=validation_split,
+    )
+
+    frame = compute_vqc(
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        args,
+        model=model,
+        data_key=data_key,
+        verbose=verbose,
+        **best_params,
+    )
+    return record_tuned_params(frame, best_params, beg_time)

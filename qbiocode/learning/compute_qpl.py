@@ -1,4 +1,5 @@
 # ====== Base class imports ======
+import hashlib
 import os
 import time
 import warnings
@@ -28,6 +29,18 @@ except Exception as exc:
     _XGBOOST_ERROR = str(exc)
     XGBClassifier = None  # type: ignore
 
+# Same broad guard, same reason: catboost's failure mode when its native extension
+# cannot load is an OSError rather than an ImportError.
+try:
+    from catboost import CatBoostClassifier
+
+    CATBOOST_AVAILABLE = True
+    _CATBOOST_ERROR = None
+except Exception as exc:  # noqa: BLE001 -- see above
+    CATBOOST_AVAILABLE = False
+    _CATBOOST_ERROR = str(exc)
+    CatBoostClassifier = None  # type: ignore
+
 # from qiskit.primitives import Sampler
 from functools import reduce
 
@@ -40,7 +53,23 @@ from sklearn.model_selection import GridSearchCV
 import qbiocode.utils.qutils as qutils
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
+from qbiocode.learning._tuning import (
+    build_search_space,
+    record_tuned_params,
+    run_function_study,
+)
+
+# Imported for its availability probe and lazy loader rather than for the estimator
+# itself: `tabpfn_is_available` uses importlib.util.find_spec, so asking whether the
+# optional extra is present costs neither the tabpfn import nor torch's OpenMP
+# runtime. See qbiocode.learning.compute_tabpfn.
+from qbiocode.learning.compute_tabpfn import (
+    TABPFN_MAX_CLASSES,
+    _explain_weight_access_failure,
+    _load_tabpfn_classifier,
+    tabpfn_is_available,
+)
 
 
 def compute_qpl(
@@ -49,7 +78,7 @@ def compute_qpl(
     y_train,
     y_test,
     args,
-    model="QPL",
+    model="qpl",
     data_key="",
     verbose=False,
     encoding="Z",
@@ -86,6 +115,11 @@ def compute_qpl(
         entanglement (str): Entanglement strategy, default is 'linear'.
         reps (int): Number of repetitions for the feature map, default is 2.
         classical_models (list): List of classical models to train on quantum projections.
+            Defaults to ``['rf', 'mlp', 'svc', 'lr', 'xgb', 'catboost']``. ``'tabpfn'`` is
+            also accepted but is deliberately absent from the default: it needs the
+            optional ``[tabpfn]`` extra, so defaulting it on would make every QPL run warn
+            in an ordinary install. Name it explicitly to use it. It needs no API token:
+            QBioCode pins the ungated ``v2`` weights.
                                  Options: 'rf', 'mlp', 'svc', 'lr', 'xgb'.
                                  Default is ['rf', 'mlp', 'svc', 'lr', 'xgb'].
 
@@ -95,20 +129,57 @@ def compute_qpl(
 
     # Set default classical models if not provided
     if classical_models is None:
-        classical_models = ["rf", "mlp", "svc", "lr", "xgb"]
+        classical_models = ["rf", "mlp", "svc", "lr", "xgb", "catboost"]
 
     beg_time = time.time()
     feat_dimension = X_train.shape[1]
 
-    if not os.path.exists("qpl_projections"):
-        os.makedirs("qpl_projections")
+    # The projection cache used to be keyed on `data_key` alone, in a hardcoded
+    # "qpl_projections" directory. Two consequences, both silent:
+    #
+    #   * Changing `encoding`, `entanglement`, `reps` or `primitive` and rerunning reused
+    #     the projection computed for the *previous* settings, so the new circuit was
+    #     never run and the reported result described the old one. Tuning made this acute
+    #     -- every trial after the first would have scored the same cached projection, so
+    #     the search would have compared a hyperparameter against itself.
+    #   * A different split of the same dataset (an inner validation split, say) matched
+    #     the same file name and was loaded at the wrong length, surfacing downstream as
+    #     `ValueError: Found input variables with inconsistent numbers of samples`, which
+    #     names neither the cache nor the file.
+    #
+    # Both are fixed the way compute_pqk already handles it: fingerprint the settings
+    # that change the circuit into the file name, validate the row count on load, and let
+    # the directory be redirected so throwaway projections stay out of the real cache.
+    projection_dir = os.path.expanduser(args.get("qpl_projection_dir", "qpl_projections"))
+    os.makedirs(projection_dir, exist_ok=True)
+
+    feature_map_fingerprint = hashlib.sha256(
+        repr((encoding, entanglement, reps, primitive, feat_dimension)).encode()
+    ).hexdigest()[:10]
 
     file_projection_train = os.path.join(
-        "qpl_projections", "qpl_projection_" + data_key + "_train.npy"
+        projection_dir,
+        "qpl_projection_" + data_key + "_" + feature_map_fingerprint + "_train.npy",
     )
     file_projection_test = os.path.join(
-        "qpl_projections", "qpl_projection_" + data_key + "_test.npy"
+        projection_dir,
+        "qpl_projection_" + data_key + "_" + feature_map_fingerprint + "_test.npy",
     )
+
+    def _validate_projection_file(path, expected_len):
+        """Refuse a cached projection whose row count does not match the current data."""
+        if not os.path.exists(path):
+            return
+        cached = np.load(path, allow_pickle=False)
+        if len(cached) != expected_len:
+            raise ValueError(
+                f"Projection file {path} has {len(cached)} rows, but the current dataset "
+                f"expects {expected_len} rows. Remove this projection file or use a "
+                f"different qpl_projection_dir."
+            )
+
+    _validate_projection_file(file_projection_train, len(X_train))
+    _validate_projection_file(file_projection_test, len(X_test))
 
     #  This function ensures that all multiplicative factors of data features inside single qubit gates are 1.0
     def data_map_func(x: np.ndarray):
@@ -257,49 +328,154 @@ def compute_qpl(
         # Remove xgb from the list
         classical_models = [m for m in classical_models if m != "xgb"]
 
+    # Same warn-and-drop treatment for catboost: one unusable head should cost that
+    # head, not the whole quantum projection that has already been computed.
+    if "catboost" in classical_models and not CATBOOST_AVAILABLE:
+        warnings.warn(
+            "CatBoost is not properly installed or configured and will be skipped.\n"
+            f"Error: {_CATBOOST_ERROR}\n"
+            "CatBoost is a core dependency, so this is a broken install; reinstall with:\n"
+            "  pip install --force-reinstall catboost\n"
+            f"Continuing with other models: {[m for m in classical_models if m != 'catboost']}",
+            UserWarning,
+        )
+        classical_models = [m for m in classical_models if m != "catboost"]
+
+    # TabPFN is an optional extra, so its absence is an ordinary configuration state
+    # rather than a broken install -- the message says how to add it and moves on.
+    if "tabpfn" in classical_models and not tabpfn_is_available():
+        warnings.warn(
+            "TabPFN is not installed and will be skipped as a QPL head.\n"
+            'Install it with: pip install "qbiocode[tabpfn]"\n'
+            f"Continuing with other models: {[m for m in classical_models if m != 'tabpfn']}",
+            UserWarning,
+        )
+        classical_models = [m for m in classical_models if m != "tabpfn"]
+
+    # TabPFN's pretrained head cannot represent more than ten classes, and unlike the
+    # row and feature limits that one is not waivable. Checked here so an unsuitable
+    # dataset drops the head with an explanation instead of failing the run.
+    if "tabpfn" in classical_models:
+        n_classes = len(np.unique(np.asarray(y_train)))
+        if n_classes > TABPFN_MAX_CLASSES:
+            warnings.warn(
+                f"TabPFN supports at most {TABPFN_MAX_CLASSES} classes but this target has "
+                f"{n_classes}, so it will be skipped as a QPL head.\n"
+                f"Continuing with other models: "
+                f"{[m for m in classical_models if m != 'tabpfn']}",
+                UserWarning,
+            )
+            classical_models = [m for m in classical_models if m != "tabpfn"]
+
     # If no models remain after filtering, raise an error
     if not classical_models:
         raise ValueError(
-            "No valid classical models specified. Please provide at least one model from: 'rf', 'mlp', 'svc', 'lr', 'xgb'"
+            "No valid classical models specified. Please provide at least one model "
+            "from: 'rf', 'mlp', 'svc', 'lr', 'xgb', 'catboost', 'tabpfn'"
         )
 
+    # `estimator`, not `model`, inside this loop. It used to rebind `model` -- the label
+    # parameter -- to each head's estimator, so the label was destroyed on the first
+    # iteration. That is why the results label below was hardcoded to "qpl_" + head:
+    # there was nothing left to read it from. Same shadowing bug as compute_pqk had.
     model_res = []
     for method in classical_models:
         if method == "rf":
-            model = create_rf_model(args["seed"])
+            estimator = create_rf_model(args["seed"])
         elif method == "svc":
-            model = create_svc_model(args["seed"])
+            estimator = create_svc_model(args["seed"])
         elif method == "mlp":
-            model = create_mlp_model(args["seed"])
+            estimator = create_mlp_model(args["seed"])
         elif method == "lr":
-            model = create_lr_model(args["seed"])
+            estimator = create_lr_model(args["seed"])
         elif method == "xgb":
-            model = create_xgb_model(args["seed"])
+            estimator = create_xgb_model(args["seed"])
+        elif method == "catboost":
+            estimator = create_catboost_model(args["seed"])
+        elif method == "tabpfn":
+            estimator = create_tabpfn_model(args["seed"])
         else:
             warnings.warn(
-                f"Unknown model type '{method}' skipped. Valid options: 'rf', 'mlp', 'svc', 'lr', 'xgb'",
+                f"Unknown model type '{method}' skipped. Valid options: 'rf', 'mlp', "
+                f"'svc', 'lr', 'xgb', 'catboost', 'tabpfn'",
                 UserWarning,
             )
             continue
 
-        method_qpl = "qpl_" + method
+        # Built from the `model` label rather than hardcoded to "qpl_". The hardcoded
+        # form threw away the argument, so `compute_qpl_opt` passing model="qpl_opt" had
+        # no effect and a TUNED run produced exactly the columns an untuned one did --
+        # `results_qpl_<head>` with model='qpl_<head>' -- so ModelResults.csv could not
+        # say whether a search had run. The head name stays the suffix (a QPL run fans
+        # out to one column per classical head), so a tuned run reads 'qpl_opt_<head>'.
+        method_qpl = f"{model}_{method}"
         print(method_qpl)
-        model.fit(projections_train, y_train)
-        y_predicted = model.predict(projections_test)
+        try:
+            estimator.fit(projections_train, y_train)
+            y_predicted = estimator.predict(projections_test)
+            # `auc` is computed from these scores alone, never from y_predicted. Every
+            # head here is fitted unwrapped, so predict_proba is reachable: the six
+            # searched heads are RandomizedSearchCV objects that delegate to
+            # `best_estimator_`, and the bare TabPFN head answers directly. The one
+            # exception is the SVC head -- `probability` is not in its grid, so
+            # extract_binary_scores falls through to decision_function, which ranks
+            # just as well. Scored on the *projections*: that is the space these heads
+            # were fitted in, and the raw features would be the wrong width.
+            y_score = extract_binary_scores(estimator, projections_test)
+        except Exception as error:  # noqa: BLE001 -- narrowed immediately below
+            # Only a weights-unavailable failure is survivable here, and only TabPFN can
+            # raise one: its checkpoint sits behind a license acceptance that cannot be
+            # detected in advance, so unlike a missing extra it is not caught by the
+            # availability filtering above. Dropping the head matches what this function
+            # already does for an unusable xgboost or catboost -- and matters more here,
+            # because by this point the quantum projection has been computed and paid
+            # for. Anything else is a real failure and propagates.
+            explained = _explain_weight_access_failure(error, method_qpl)
+            if explained is None:
+                raise
+            warnings.warn(
+                f"{method_qpl} could not run and was skipped.\n{explained}",
+                UserWarning,
+            )
+            continue
 
         hyperparameters = {
             "feature_map": feature_map.__class__.__name__,
             "feature_map_reps": reps,
             "entanglement": entanglement,
-            "best_params": model.best_params_,
+            # Every other head is a RandomizedSearchCV and carries best_params_.
+            # TabPFN is fitted bare -- see create_tabpfn_model for why -- so there is
+            # no search result to report and its own settings are the honest answer.
+            "best_params": getattr(estimator, "best_params_", None) or estimator.get_params(),
             # Add other hyperparameters as needed
         }
         model_params = hyperparameters
 
         model_res.append(
             modeleval(
-                y_test, y_predicted, beg_time, model_params, args, model=method_qpl, verbose=verbose
+                y_test,
+                y_predicted,
+                beg_time,
+                model_params,
+                args,
+                model=method_qpl,
+                # Explicit because the label is 'qpl_opt_<head>': the marker is not a
+                # suffix, so modeleval's endswith("_opt") inference cannot see it.
+                tuned=str(model).endswith("_opt"),
+                verbose=verbose,
+                y_score=y_score,
             )
+        )
+
+    # Every head having been dropped leaves nothing to concatenate, and `pd.concat([])`
+    # raises "No objects to concatenate" -- which says nothing about the heads or the
+    # projection that produced them. Reachable now that a gated TabPFN is skipped rather
+    # than fatal, and already reachable before via the unknown-model-name branch.
+    if not model_res:
+        raise ValueError(
+            f"None of the requested classical models {classical_models} could be fitted "
+            f"on the quantum projection, so there are no results to report. See the "
+            f"warnings above for why each was skipped."
         )
 
     model_res = pd.concat(model_res)
@@ -346,6 +522,84 @@ def create_xgb_model(seed):
     )
 
     return xgb_model
+
+
+def create_catboost_model(seed):
+    """A searched CatBoost head, matching how the other tree-based heads are built.
+
+    Two CatBoost-specific points:
+
+    * ``bootstrap_type`` is pinned to ``'Bernoulli'`` rather than left unset. The grid
+      below varies ``subsample``, which CatBoost accepts under Bernoulli/MVS/Poisson
+      but rejects under the Bayesian bootstrap -- and Bayesian is exactly what it
+      defaults to once the target has more than two classes. Unpinned, this head would
+      work on a binary projection and raise ``CatBoostError`` on a multiclass one.
+
+    * ``allow_writing_files=False`` keeps every fit from dropping a ``catboost_info/``
+      directory into the working directory; ``verbose=False`` silences the
+      per-iteration training log. ``n_jobs=-1`` on the search below means many of these
+      run at once, so both matter more here than in a single fit.
+    """
+    if not CATBOOST_AVAILABLE:
+        raise ImportError(
+            "CatBoost is not properly installed or configured.\n"
+            f"Error: {_CATBOOST_ERROR}\n\n"
+            "CatBoost is a core QBioCode dependency, so this is a broken install. "
+            "Reinstall it with:\n"
+            "  pip install --force-reinstall catboost"
+        )
+    # random_state=seed for the same reason as create_xgb_model: the grid varies
+    # `subsample` and `rsm`, both of which sample at random.
+    catboost = CatBoostClassifier(  # type: ignore
+        random_state=seed,
+        bootstrap_type="Bernoulli",
+        verbose=False,
+        allow_writing_files=False,
+    )
+
+    catboost_param_distributions = {
+        "iterations": [100, 200, 300],
+        "learning_rate": [0.01, 0.1, 0.2],
+        "depth": [3, 5, 7],
+        "l2_leaf_reg": [1.0, 3.0, 9.0],
+        "subsample": [0.7, 0.8, 1.0],
+    }
+
+    # Initialize RandomizedSearchCV
+    catboost_model = RandomizedSearchCV(
+        estimator=catboost,
+        param_distributions=catboost_param_distributions,
+        n_iter=40,
+        cv=5,
+        random_state=seed,
+        n_jobs=-1,
+    )
+
+    return catboost_model
+
+
+def create_tabpfn_model(seed):
+    """A bare TabPFN head -- the only one here that is not wrapped in a search.
+
+    Every sibling factory returns a ``RandomizedSearchCV`` because its estimator has
+    training hyperparameters worth searching. TabPFN has none: the weights are
+    pretrained and frozen, ``fit`` only memorises the training rows, and what it
+    exposes are inference settings that move accuracy very little. Wrapping it as the
+    others are would cost ``n_iter * cv`` transformer forward passes -- 200 at the
+    settings used above -- per projection, per embedding, per split, to choose between
+    near-identical candidates. Running it once at its defaults is both the honest
+    configuration and the affordable one, which is rather the point of the model.
+
+    The caller reads ``best_params_`` off the returned object; ``compute_qpl`` falls
+    back to ``get_params()`` for exactly this head.
+
+    Raises:
+        ImportError: If the optional ``[tabpfn]`` extra is absent. ``compute_qpl``
+            checks availability first and drops the head with a warning, so reaching
+            this means the factory was called directly.
+    """
+    classifier_cls = _load_tabpfn_classifier()
+    return classifier_cls(random_state=seed)
 
 
 def create_lr_model(seed):
@@ -441,3 +695,98 @@ def create_svc_model(seed):
     )
 
     return svc_model
+
+def compute_qpl_opt(
+    X_train,
+    X_test,
+    y_train,
+    y_test,
+    args,
+    verbose=False,
+    # '_opt', so a DIRECT call is self-describing. model_run always passes
+    # model='qpl_opt' explicitly, but a caller using the default would otherwise
+    # produce a row labelled as untuned -- and modeleval infers `tuned` from this
+    # very string, so the label and the parameter column would BOTH be wrong.
+    model="qpl_opt",
+    data_key="",
+    encoding=None,
+    primitive=None,
+    entanglement=None,
+    reps=None,
+    *,
+    n_trials=10,
+    validation_split=0.25,
+):
+    """Tune QPL's hyperparameters with Optuna, then run it at the best ones found.
+
+    The quantum counterpart of the classical ``compute_*_opt`` functions, and driven by
+    the same ``gridsearch_qpl_args`` config block -- a list is a choice, a
+    ``{low, high}`` mapping is a range. It differs in how a candidate is scored: a
+    quantum fit builds an n-by-n fidelity kernel by circuit simulation, so scoring by
+    k-fold cross-validation would multiply an already expensive search by k. Each trial
+    is scored once, on a stratified holdout carved out of ``X_train``; the caller's test
+    set is never touched by the search.
+
+    Only reachable when the config sets both ``grid_search: True`` and
+    ``tune_quantum: True``. Tuning against a real device is refused unless
+    ``allow_hardware_tuning: True`` -- every trial would be a queued job.
+
+    Args:
+        X_train (array-like): Training data features. Split again internally to score
+            candidates; the final model is refitted on all of it.
+        X_test (array-like): Test data features, used only for the final evaluation.
+        y_train (array-like): Training data labels.
+        y_test (array-like): Test data labels.
+        args (dict): Run configuration. ``backend``, ``shots`` and ``seed`` are read
+            from it by the underlying quantum function.
+        verbose (bool): If True, prints additional information during execution.
+        model (str): Name of the model being used, default is 'QPL'.
+        data_key (str): Key for identifying the dataset.
+        encoding (list or dict): Feature-map values to search ('Z', 'ZZ', 'P'). None leaves it at the default.
+        primitive (list or dict): Qiskit primitives to search ('sampler', 'estimator'). None leaves it at the default.
+        entanglement (list or dict): Entanglement patterns to search ('linear', 'full', ...). None leaves it at the default.
+        reps (list or dict): Feature-map repetition counts to search. None leaves it at the default.
+        n_trials (int): Trial budget, default 10 -- an order of magnitude below the
+            classical default because each trial is a quantum fit. Lowered
+            automatically when the configured values describe fewer combinations.
+        validation_split (float): Fraction of the training data held out to score
+            candidates on, default 0.25.
+
+    Returns:
+        modeleval (dict): The evaluation of the model at the best hyperparameters found,
+        with the tuned values recorded in the results frame and the reported time
+        covering the whole search rather than only the final fit.
+    """
+    beg_time = time.time()
+
+    candidates = {
+        "encoding": encoding,
+        "primitive": primitive,
+        "entanglement": entanglement,
+        "reps": reps,
+    }
+
+    best_params = run_function_study(
+        compute_qpl,
+        build_search_space("qpl", candidates),
+        X_train,
+        y_train,
+        args,
+        model="qpl",
+        n_trials=n_trials,
+        seed=args.get("seed") if isinstance(args, dict) else None,
+        validation_split=validation_split,
+    )
+
+    frame = compute_qpl(
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        args,
+        model=model,
+        data_key=data_key,
+        verbose=verbose,
+        **best_params,
+    )
+    return record_tuned_params(frame, best_params, beg_time)

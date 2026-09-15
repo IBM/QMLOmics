@@ -35,6 +35,16 @@ coverage.xml
 **/credentials.json
 credentials.json
 
+# TabPFN API token. The supported location is ~/.config/qbiocode/tabpfn.json, which is
+# outside the repository and so cannot be committed at all -- see
+# qbiocode/utils/tabpfn_account.py for why that is the primary defence rather than these
+# rules. These patterns are belt-and-braces for a token someone puts in the tree anyway.
+**/tabpfn.json
+**/tabpfn_config.json
+**/tabpfn_token.json
+**/tabpfn*secret*.json
+tabpfn.json
+
 # Documentation
 # Sphinx build output. `docs/Makefile` sets BUILDDIR = build, and CI uploads
 # docs/build/html, so docs/build/ is the single build directory. docs/_build/ is
@@ -82,6 +92,9 @@ tutorial/**/*.png
 tutorial/**/.ipynb_checkpoints/
 tutorial/**/pqk_projections/
 tutorial/**/qpl_projections/
+# Running a PQK/QPL example from the repository root lands the cache here.
+/pqk_projections/
+/qpl_projections/
 # `PQK - OV.ipynb` downloads a 46 MB archive and extracts ~250 MB of TCGA tables
 # beside itself, then writes its results table there. Every byte is reproducible
 # from the URL in the notebook's own download cell, so none of it belongs in git --

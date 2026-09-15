@@ -60,6 +60,7 @@ def read_requirements(name):
     ("extra", "filename"),
     [
         ("quvine", "requirements-quvine.txt"),
+        ("tabpfn", "requirements-tabpfn.txt"),
         ("docs", "requirements-docs.txt"),
     ],
 )
@@ -88,8 +89,8 @@ def test_all_extra_is_a_union_not_a_copy():
     and omitted nothing it should have, but nothing kept it honest.
     """
     extras = read_pyproject()["project"]["optional-dependencies"]
-    assert extras["all"] == ["qbiocode[apps,quvine,docs,dev]"]
-    for name in ("apps", "quvine", "docs", "dev"):
+    assert extras["all"] == ["qbiocode[apps,quvine,tabpfn,docs,dev]"]
+    for name in ("apps", "quvine", "tabpfn", "dev", "docs"):
         assert name in extras
 
 

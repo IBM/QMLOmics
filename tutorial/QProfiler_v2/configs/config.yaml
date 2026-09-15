@@ -1,0 +1,402 @@
+## QProfiler v2 tutorial config -- see tutorial/QProfiler_v2/example_qprofiler_v2.ipynb
+##
+## Differences from tutorial/QProfiler/configs/config.yaml, all deliberate:
+##   * all ten models, so CatBoost, TabPFN and XGBoost are compared side by side
+##   * grid_search: True with tuner: optuna, so every classical model is tuned
+##   * iter: 5 over 3 datasets, giving 15 (dataset, split) observations per
+##     (model, embedding) group -- enough for a Spearman correlation to mean something
+##   * search spaces and PQK depth trimmed for runtime; each cut is annotated where it
+##     is made, with what it saved
+
+config_file_name: 'qprofiler_v2'
+
+# Directory holding the input CSVs. Relative paths resolve against the working
+# directory first, so 'data/ld_data_v2' is the directory example_qprofiler_v2.ipynb
+# generates next to itself -- which keeps this config correct wherever the notebook is
+# run from, including the generated copy under docs/. It is a DIFFERENT directory from
+# the v1 notebook's 'data/ld_data': these datasets are 80x6 with a varying number of
+# clusters per class, not 100x10 with a varying class balance.
+folder_path: 'data/ld_data_v2'
+file_dataset: 'ALL'
+# or use a list as below, to only select a few datasets
+# file_dataset: ['file1', 'file2', 'file3', etc]
+
+# Set to True if your CSV files have row names in the first column
+# If True, the first column will be used as index and excluded from features
+# If False (default), all columns except the last are treated as features
+index_col: False
+
+# choose a backend for the QML methods
+# backend: 'ibm_cleveland'
+# backend: 'ibm_least'
+backend: 'simulator'
+
+# IBM runtime credentials - they should be in your home directory by default, but if they are elsewhere, please change path below.
+# 'name' should be the account name alias you used when saving your runtime credentials.  This is relevant if you have multiple accounts stored in your json.
+# 'ibm_instance' is the instance with your account under which to run your job.  If not included, it will search for an available instance under your account if you have multiple.
+qiskit_json_path: '~/.qiskit/qiskit-ibm.json'
+
+
+# TabPFN API token (only needed if 'tabpfn' is in the model list above). Read from a file
+# OUTSIDE the repository, so it cannot be committed: ~/.config/qbiocode/tabpfn.json,
+# holding {"token": "<your api key>"}. Create it with
+#     python -c "from qbiocode.utils import write_token_template; print(write_token_template())"
+# then paste the key from https://ux.priorlabs.ai (Account page) into it.
+# An exported TABPFN_TOKEN takes precedence over this file.
+tabpfn_json_path: '~/.config/qbiocode/tabpfn.json'
+# name: 'account_name_alias'
+# ibm_instance:
+
+# of ML methods to run in parallel
+# this is the number of jobs to run in parallel, and should be set to no more than the number of models you will run, or the number of cores you have available.
+# Left at 1 so the tutorial's log output stays in order and the run is reproducible;
+# raise it to the number of models for a real sweep.
+n_jobs: 1
+
+# select the embedding method for reducing dimensionality (number of features) in your data set
+# this always needs to be a list! even if you only want to use one embedding method, it still needs to be in a list.
+# embeddings: ['none']
+embeddings: ['none', 'pca']
+
+# number of dimensions (features) to embed (reduce) your data down to
+n_components: 3
+
+# ML models to generate
+# parameters to use for each ML method are listed further down in this file
+# All ten run here -- the six classical baselines, all three boosted/pretrained tabular
+# learners (xgb, catboost, tabpfn) and one quantum model. 'tabpfn' needs the optional
+# extra: pip install "qbiocode[tabpfn]". It needs no API token, since QBioCode pins
+# model_version 'v2', whose weights download anonymously.
+# qsvc/vqc/qnn are the expensive quantum ones and are left out; add them for a real
+# sweep, but expect the runtime to grow by much more than a third:
+#   model: [..., 'qsvc', 'vqc', 'qnn', 'pqk']
+model: ['lr', 'nb', 'dt', 'rf', 'svc', 'mlp', 'xgb', 'catboost', 'tabpfn', 'pqk']
+
+average: 'weighted'
+multi_class: 'raise'
+
+# fix the seeds, to ensure deterministic and reproducible outcome
+seed: 42
+q_seed: 42
+shots: 1024
+
+# this sets the level of error mitigation for the QML methods (ranges from 1-3)
+resil_level: 1
+
+# set the ratio of train:test the data is split into, in this case 70:30
+test_size: 0.3
+
+# Enable stratified sampling to maintain class distribution in train/test splits
+# Set to ['y'] to enable stratification, or [] to disable
+# Stratification is recommended for imbalanced datasets
+stratify: ['y']
+
+# Enable feature scaling (MinMaxScaler)
+scaling: ['True']
+
+# Hyperparameter tuning for the classical methods, ON here -- the v1 tutorial leaves it
+# off. Note the interaction with tune_quantum below: tuned classical models report a
+# 'BestParams_Tuned' column and untuned ones report 'Model_Parameters', so a run with
+# grid_search: True and tune_quantum: False produces both columns in ModelResults.csv.
+grid_search: True
+
+# Which search to run when grid_search is on.
+#   optuna -- sample n_trials configurations with Optuna's TPE sampler (default)
+#   grid   -- fit every combination, the exhaustive sweep used before Optuna
+tuner: optuna
+
+# Trial budget for the optuna tuner. Automatically lowered when the values below
+# describe fewer distinct combinations than this -- which is how the TabPFN search
+# below ends up at 4 trials rather than 8. Ignored when tuner: grid.
+# 8 rather than the shipped 50: the notebook runs 30 (dataset, split, embedding)
+# combinations, so every trial is paid 30 times over.
+n_trials: 8
+
+# Also tune the QUANTUM models (qsvc, vqc, qnn, pqk, qpl). Off by default: each trial
+# is a quantum fit, so this multiplies their cost by n_trials_quantum. Needs a
+# gridsearch_<model>_args block for every quantum model in `model` above.
+tune_quantum: False
+n_trials_quantum: 10
+
+# Fraction of the training data held out to score each quantum candidate on. Quantum
+# candidates are scored on one stratified holdout rather than k folds, because a
+# quantum fit is expensive enough that k-fold would multiply the search by k.
+validation_split: 0.25
+
+# n-fold cross validation. 3 rather than 5: with 56 training rows, 5 folds leave ~11
+# validation rows per fold, so the fold-to-fold noise swamps the difference between
+# candidates the search is trying to rank.
+cross_validation: 3
+NN_depth: 1
+
+# Number of train-test splits. 5 here, over 3 datasets, is what gives the correlation
+# analysis 15 observations per (model, embedding) group: the complexity block is
+# recomputed on each split's TRAINING rows, so complexity and performance vary together
+# across the 15 and Spearman has something real to measure. With the v1 tutorial's
+# iter: 2 over 3 datasets there would be 6, which is not enough for a rank correlation
+# to be worth plotting.
+iter: 5
+
+# Begin function arguments
+# Each CML method takes a tuned set of arguments (gridsearch_<method>_args) as well as
+# a standard set (<method>_args), the latter usually the same values but not as lists.
+# A tuned argument may be written either way:
+#   a list  -- ['linear', 'rbf']        one of these values is chosen
+#   a range -- {low: 0.001, high: 100}  sampled continuously; add log: true for a
+#                                       log scale, step: n for fixed spacing.
+# Ranges need tuner: optuna; under tuner: grid every entry must be a list.
+# For QML grid search, one must use generate_experiments.ipynb in tutorial_notebooks/analyses/qml_experiment_generators/,
+# which will generate individual config.yaml files for each combination of parameters.
+# A sample slurm script is provided, which would iterate over each config.yaml file, for use on an HPC cluster.
+
+# begin SVC arguments
+svc_args: { 'C': 0.01, 'gamma': 0.1, kernel: 'linear' }
+
+# C and gamma are written as log-scale ranges here to show the syntax: Optuna can
+# propose 3.7, which the old decade list never could. kernel stays a list because a
+# kernel name is a choice, not an interval.
+gridsearch_svc_args: {'C': {low: 1.0e-3, high: 1.0e+2, log: true},
+                      'gamma': {low: 1.0e-4, high: 1.0e+0, log: true},
+                      'kernel': ['linear', 'rbf', 'poly','sigmoid']
+                     }
+
+#begin DT arguments
+dt_args: {'criterion': 'gini', 
+          'max_depth': null,
+          'min_samples_split': 2,
+          'min_samples_leaf': 1,
+          'max_features': null
+          }
+
+gridsearch_dt_args: {'criterion': ['gini', 'entropy', 'log_loss'], 
+                     'max_depth': [null, 5, 10, 15, 20],
+                     'min_samples_split': [2, 5, 10, 15],
+                     'min_samples_leaf': [1, 2, 4, 6],
+                     'max_features': [null, 'sqrt', 'log2']
+                     }
+
+# begin NB arguments
+nb_args: {'var_smoothing': 1.e-09}
+
+gridsearch_nb_args: {'var_smoothing': [1.e-09, 1.e-08, 1.e-07, 1.e-06, 1.e-05, 1.e-04, 1.e-03, 1.e-02]}
+
+# begin LR arguments 
+lr_args: {'penalty': 'l2',
+          'C': 1.0,
+          'solver': 'saga',
+          'max_iter':10000
+          }
+
+gridsearch_lr_args: {'penalty': ['l1', 'l2'],
+                     'C': [1.e-03, 1.e-02, 1.e-01, 1.e+00, 1.e+01, 1.e+02, 1.e+03],
+                     'solver': ['liblinear', 'saga'],
+                     'max_iter': [5000, 10000]
+                     }
+
+# begin RF arguments
+rf_args: {'n_estimators': 100,
+          'max_features': 'sqrt',
+          'max_depth': null,
+          'min_samples_split': 2,
+          'min_samples_leaf': 1,
+          'bootstrap': True
+          }
+
+gridsearch_rf_args: {'n_estimators': [50, 100],
+                     'max_features': ['sqrt', 'log2'],
+                     'max_depth': [10, null],
+                     'min_samples_split': [2, 5],
+                     'bootstrap': [True]
+                     }
+
+# Begin MLP arguments
+mlp_args: {'hidden_layer_sizes': 100,
+           'activation': 'relu', 
+           'max_iter': 10000,
+           'solver': 'adam',
+           'alpha': 0.0001,
+           'learning_rate': 'constant',
+           }
+
+# Trimmed from 144 combinations to 4. On 56 training rows the MLP converges long
+# before 5000 iterations, and 'sgd' only ever lost to 'adam' here, so the dropped
+# axes cost nothing measurable and saved ~3 s per split.
+gridsearch_mlp_args: {'hidden_layer_sizes': [[20,],[50,]],
+                      'activation': ['relu'],
+                      'max_iter': [2000],
+                      'solver': ['adam'],
+                      'alpha': [0.0001, 0.05],
+                      'learning_rate': ['constant'],
+                      }
+
+
+# begin XGB arguments
+xgb_args: {'n_estimators': 100,
+           'max_depth': null,
+           'learning_rate': 0.5,
+           'subsample': 0.5,
+           'colsample_bytree': 1.0,
+           'min_child_weight': 1,
+           }
+
+gridsearch_xgb_args: {'n_estimators': [50, 100, 200, 300],
+                      'max_depth': [5, 10, 20, 30, null],
+                      'learning_rate': [0.01, 0.1, 0.2],
+                      'subsample': [0.7, 0.8, 1.0],
+                      'colsample_bytree': [0.7, 0.8, 1.0],
+                      'min_child_weight': [1, 3, 5],
+                      }
+
+
+# begin CatBoost arguments
+# Any parameter left out below is left at CatBoost's own default. That is not the same
+# as writing the documented default in: CatBoost derives several defaults from the data
+# and from each other -- it auto-selects 'learning_rate' unless 'l2_leaf_reg' is set,
+# and picks 'bootstrap_type' from the inferred loss -- so naming one can change more
+# than the one value. Reference:
+#   https://catboost.ai/docs/en/references/training-parameters/common
+catboost_args: {'iterations': 200,
+                'learning_rate': 0.1,
+                'depth': 6,
+                'l2_leaf_reg': 3.0,
+                }
+
+# 'subsample' and 'bagging_temperature' are deliberately absent here. They belong to
+# mutually exclusive CatBoost bootstrap schemes, and the scheme CatBoost defaults to
+# depends on the LOSS -- MVS under Logloss, Bayesian under MultiClass. QProfiler is a
+# binary-classification tool, so the inferred loss is Logloss and 'subsample' is fine
+# at the default; but setting 'loss_function: MultiClass' (legal even on a two-class
+# target) flips the scheme and raises CatBoostError. compute_catboost pins
+# 'bootstrap_type' for you when you name either one, and rejects a block that asks for
+# both; the shipped defaults simply stay clear of the area.
+gridsearch_catboost_args: {'iterations': [100, 200],
+                           'learning_rate': {low: 1.0e-2, high: 3.0e-1, log: true},
+                           'depth': [4, 6],
+                           'l2_leaf_reg': {low: 1.0, high: 10.0},
+                           }
+
+# begin TabPFN arguments
+# TabPFN needs only the optional [tabpfn] extra:
+#     pip install "qbiocode[tabpfn]"
+# No API token and no license acceptance: QBioCode pins model_version 'v2', whose weights
+# are under the Prior Labs License (Apache 2.0 plus attribution) and download anonymously
+# on first fit. It IS in the 'model' list above, so this notebook needs the extra.
+#
+# LICENSING: 'v2' is the only version whose weights permit commercial use. 'v2.5', 'v2.6'
+# and 'v3' are NON-COMMERCIAL and non-production, and additionally require accepting that
+# license against a Prior Labs account (interactively, so they cannot be fetched
+# unattended). Setting model_version to one of them warns and names the license. Only do
+# so once you are satisfied the license fits your use.
+#
+# Nothing below is a training hyperparameter. The weights are frozen and pretrained;
+# 'fit' only memorises the training rows, so every setting below is an inference knob
+# and none of them changes model capacity. 'device' is pinned to cpu because MPS and
+# CUDA are not numerically identical to it, which would make a benchmark
+# irreproducible across machines.
+tabpfn_args: {'model_version': 'v2',
+              'n_estimators': 4,
+              'softmax_temperature': 0.9,
+              'balance_probabilities': False,
+              'average_before_softmax': False,
+              'device': 'cpu',
+              }
+
+# Kept deliberately small: one trial here is `cross_validation` full transformer
+# forward passes over the training rows, not five cheap tree fits.
+# The single most expensive search in this config, so it is the most trimmed. One
+# trial is `cross_validation` full transformer forward passes, not a cheap tree fit.
+# Every axis here is a LIST and none is a range, so the space is 4 combinations and
+# the tuner lowers n_trials from 8 to 4 by itself -- 12 forward passes rather than
+# 24. Measured: 11.1 s -> 4.5 s per split across both embeddings.
+gridsearch_tabpfn_args: {'model_version': 'v2',
+                         'n_estimators': [1, 4],
+                         'softmax_temperature': 0.9,
+                         'balance_probabilities': [True, False],
+                         'device': 'cpu',
+                         }
+
+
+#### Begin QML function parameters
+
+# Begin QNN arguments
+# add SPSA
+qnn_args: {'primitive': 'estimator',
+           'local_optimizer': 'COBYLA', 
+           'encoding': ZZ,
+           'entanglement': 'linear',
+           'reps':2,
+           'maxiter': 100,
+           'ansatz_type' : 'amp'
+           }
+
+
+# Begin QSVC arguments
+qsvc_args: {'C': 0.01, 
+            'pegasos': False, 
+            'encoding': ZZ,
+            'entanglement': 'linear',
+            'reps': 2,
+            'primitive': 'sampler',
+            }
+
+
+# Begin VQC arguments
+vqc_args: {'primitive': 'sampler',
+           'local_optimizer': 'COBYLA', 
+           'maxiter': 100,
+           'encoding': ZZ,
+           'entanglement': 'linear',
+           'reps': 2,
+           'ansatz_type' : 'amp'
+           }
+
+# Begin PRK arguments
+# reps 2 rather than 4: on 6 unembedded features this is a 6-qubit circuit, and
+# halving the depth takes the unembedded PQK fit from 5.7 s to about 2 s per split
+# without changing what the notebook demonstrates.
+pqk_args: {'encoding': ZZ,
+           'entanglement': 'pairwise',
+           'primitive': 'estimator',
+           'reps': 2
+           }
+           
+# set hydra output directories
+hydra:
+  run:
+    dir: results/${config_file_name}/dataset=${file_dataset}/${backend}_${now:%Y-%m-%d_%H-%M-%S}
+
+# ---------------------------------------------------------------------------
+# Quantum hyperparameter tuning (needs grid_search: True AND tune_quantum: True)
+# ---------------------------------------------------------------------------
+# Same syntax as the classical blocks: a list is a choice, a {low, high} mapping is a
+# range. Keep these small -- every trial is a quantum fit, so the cost is n_trials_quantum
+# times the cost of one ordinary run of that model.
+gridsearch_qsvc_args: {'encoding': ['Z', 'ZZ'],
+                       'reps': [1, 2],
+                       'entanglement': ['linear', 'full'],
+                       'C': {low: 1.0e-2, high: 1.0e+2, log: true}
+                      }
+
+gridsearch_vqc_args: {'encoding': ['Z', 'ZZ'],
+                      'reps': [1, 2],
+                      'ansatz_type': ['amp'],
+                      'local_optimizer': ['COBYLA', 'L_BFGS_B'],
+                      'maxiter': {low: 50, high: 200}
+                     }
+
+gridsearch_qnn_args: {'encoding': ['Z', 'ZZ'],
+                      'reps': [1, 2],
+                      'ansatz_type': ['amp'],
+                      'local_optimizer': ['COBYLA', 'L_BFGS_B'],
+                      'maxiter': {low: 50, high: 200}
+                     }
+
+gridsearch_pqk_args: {'encoding': ['Z', 'ZZ'],
+                      'reps': [1, 2],
+                      'entanglement': ['linear', 'full']
+                     }
+
+gridsearch_qpl_args: {'encoding': ['Z', 'ZZ'],
+                      'reps': [1, 2],
+                      'entanglement': ['linear', 'full']
+                     }

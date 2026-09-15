@@ -40,6 +40,7 @@ from qbiocode.learning._grid import build_param_grid
 # The `*_opt` signature keyword, the grid entry it feeds, and a small legal value.
 # One entry per model so a partial grid is exercised through the real call path.
 PARTIAL_GRIDS = [
+    ("catboost", {"iterations": [10, 20]}),
     ("dt", {"max_depth": [2, 3]}),
     ("lr", {"C": [0.1, 1.0]}),
     ("mlp", {"alpha": [1e-4, 1e-3]}),
@@ -47,7 +48,15 @@ PARTIAL_GRIDS = [
     ("rf", {"n_estimators": [10, 20]}),
     ("svc", {"C": [0.1, 1.0]}),
     ("xgb", {"n_estimators": [10, 20]}),
+    # tabpfn is here so the partial-grid contract covers it too, but it is the one
+    # learner that cannot be assumed runnable: it needs the optional [tabpfn] extra
+    # and a checkpoint it downloads on first use. The test skips it when either is missing --
+    # see the `tabpfn_skip_reason` fixture in conftest.py.
+    ("tabpfn", {"n_estimators": [1, 2]}),
 ]
+
+#: Learners whose dependencies are not guaranteed present, and the fixture that says so.
+_OPTIONAL_LEARNERS = {"tabpfn"}
 
 
 @pytest.fixture
@@ -93,10 +102,21 @@ class TestBuildParamGrid:
         assert build_param_grid("mlp", {"alpha": [0, 1]}) == {"alpha": [0, 1]}
 
 
+@pytest.mark.parametrize("tuner", ["optuna", "grid"])
 @pytest.mark.parametrize("model,grid", PARTIAL_GRIDS, ids=[m for m, _ in PARTIAL_GRIDS])
-def test_every_opt_learner_accepts_a_one_parameter_grid(model, grid, data):
-    """The regression guard: one hyperparameter is a complete, valid config."""
+def test_every_opt_learner_accepts_a_one_parameter_grid(
+    model, grid, tuner, data, tabpfn_skip_reason
+):
+    """The regression guard: one hyperparameter is a complete, valid config.
+
+    Run against both search engines. Optuna is the default, but ``tuner: grid``
+    exists so a number published against the exhaustive sweep stays reproducible,
+    and an escape hatch nothing exercises is not an escape hatch.
+    """
     import sys
+
+    if model in _OPTIONAL_LEARNERS and tabpfn_skip_reason is not None:
+        pytest.skip(tabpfn_skip_reason)
 
     import qbiocode  # noqa: F401  -- orders the OpenMP runtimes before xgboost fits
 
@@ -104,7 +124,10 @@ def test_every_opt_learner_accepts_a_one_parameter_grid(model, grid, data):
     X_train, X_test, y_train, y_test = data
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        result = fn(X_train, X_test, y_train, y_test, {"seed": 42, "grid_search": True}, cv=3, **grid)
+        result = fn(
+            X_train, X_test, y_train, y_test, {"seed": 42, "grid_search": True},
+            cv=3, tuner=tuner, n_trials=5, **grid,
+        )
 
     # modeleval returns a one-row frame with a `results_<model label>` column
     # holding the metrics dict, and the label is the model's display name rather
@@ -115,7 +138,7 @@ def test_every_opt_learner_accepts_a_one_parameter_grid(model, grid, data):
     assert np.isfinite(metrics["accuracy"]), f"non-finite accuracy: {metrics['accuracy']}"
 
     tuned = next(iter(grid))
-    best = metrics["BestParams_GridSearch"]
+    best = metrics["BestParams_Tuned"]
     assert set(best) == {tuned}, (
         f"{tuned!r} was the only hyperparameter given, so it must be the only one "
         f"searched -- everything else stays at the estimator default. Got {sorted(best)}"
@@ -139,5 +162,5 @@ def test_xgboost_says_so_when_given_a_parameter_it_ignores(data):
     with pytest.warns(UserWarning, match="bootstrap"):
         compute_xgb_opt(
             X_train, X_test, y_train, y_test, {"seed": 42, "grid_search": True},
-            cv=3, n_estimators=[10], bootstrap=[True, False],
+            cv=3, n_trials=3, n_estimators=[10], bootstrap=[True, False],
         )

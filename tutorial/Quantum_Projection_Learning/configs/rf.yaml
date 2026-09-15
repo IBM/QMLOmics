@@ -58,6 +58,26 @@ scaling: ['True']
 # this turns on a grid search (hyperparameter tuning) for the CML methods
 grid_search: True
 
+# Which search to run when grid_search is on.
+#   optuna -- sample n_trials configurations with Optuna's TPE sampler (default)
+#   grid   -- fit every combination, the exhaustive sweep used before Optuna
+tuner: optuna
+
+# Trial budget for the optuna tuner. Automatically lowered when the values below
+# describe fewer distinct combinations than this. Ignored when tuner: grid.
+n_trials: 50
+
+# Also tune the QUANTUM models (qsvc, vqc, qnn, pqk, qpl). Off by default: each trial
+# is a quantum fit, so this multiplies their cost by n_trials_quantum. Needs a
+# gridsearch_<model>_args block for every quantum model in `model` above.
+tune_quantum: False
+n_trials_quantum: 10
+
+# Fraction of the training data held out to score each quantum candidate on. Quantum
+# candidates are scored on one stratified holdout rather than k folds, because a
+# quantum fit is expensive enough that k-fold would multiply the search by k.
+validation_split: 0.25
+
 # n-fold cross validation
 cross_validation: 5
 NN_depth: 1
@@ -221,3 +241,39 @@ pqk_args: {'encoding': ZZ,
 hydra:
   run:
     dir: results/${config_file_name}/dataset=${file_dataset}/${backend}_${now:%Y-%m-%d_%H-%M-%S}
+
+# ---------------------------------------------------------------------------
+# Quantum hyperparameter tuning (needs grid_search: True AND tune_quantum: True)
+# ---------------------------------------------------------------------------
+# Same syntax as the classical blocks: a list is a choice, a {low, high} mapping is a
+# range. Keep these small -- every trial is a quantum fit, so the cost is n_trials_quantum
+# times the cost of one ordinary run of that model.
+gridsearch_qsvc_args: {'encoding': ['Z', 'ZZ'],
+                       'reps': [1, 2],
+                       'entanglement': ['linear', 'full'],
+                       'C': {low: 1.0e-2, high: 1.0e+2, log: true}
+                      }
+
+gridsearch_vqc_args: {'encoding': ['Z', 'ZZ'],
+                      'reps': [1, 2],
+                      'ansatz_type': ['amp'],
+                      'local_optimizer': ['COBYLA', 'L_BFGS_B'],
+                      'maxiter': {low: 50, high: 200}
+                     }
+
+gridsearch_qnn_args: {'encoding': ['Z', 'ZZ'],
+                      'reps': [1, 2],
+                      'ansatz_type': ['amp'],
+                      'local_optimizer': ['COBYLA', 'L_BFGS_B'],
+                      'maxiter': {low: 50, high: 200}
+                     }
+
+gridsearch_pqk_args: {'encoding': ['Z', 'ZZ'],
+                      'reps': [1, 2],
+                      'entanglement': ['linear', 'full']
+                     }
+
+gridsearch_qpl_args: {'encoding': ['Z', 'ZZ'],
+                      'reps': [1, 2],
+                      'entanglement': ['linear', 'full']
+                     }

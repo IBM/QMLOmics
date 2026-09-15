@@ -13,6 +13,7 @@ qbiocode.learning package
     .. toctree::
        :maxdepth: 1
 
+       qbiocode.learning.compute_catboost
        qbiocode.learning.compute_dt
        qbiocode.learning.compute_lr
        qbiocode.learning.compute_mlp
@@ -24,6 +25,7 @@ qbiocode.learning package
        qbiocode.learning.compute_qsvc
        qbiocode.learning.compute_rf
        qbiocode.learning.compute_svc
+       qbiocode.learning.compute_tabpfn
        qbiocode.learning.compute_vqc
        qbiocode.learning.compute_xgb
 
@@ -37,6 +39,10 @@ qbiocode.learning package
 
     .. list-table::
     
+       * - :func:`compute_catboost <qbiocode.learning.compute_catboost.compute_catboost>`
+         - This function generates a model using a Gradient Boosting Classifier method as implemented in `CatBoost <https://catboost.ai/docs/en/references/training-parameters/common>`__.
+       * - :func:`compute_catboost_opt <qbiocode.learning.compute_catboost.compute_catboost_opt>`
+         - This function also generates a model using a Gradient Boosting Classifier method as implemented in `CatBoost <https://catboost.ai/docs/en/references/training-parameters/common>`__.
        * - :func:`compute_dt <qbiocode.learning.compute_dt.compute_dt>`
          - This function generates a model using a Decision Tree (DT) Classifier method as implemented in `scikit-learn <https://scikit-learn.org/stable/modules/generated/sklearn.tree.DecisionTreeClassifier.html>`__.
        * - :func:`compute_dt_opt <qbiocode.learning.compute_dt.compute_dt_opt>`
@@ -73,6 +79,10 @@ qbiocode.learning package
          - This function generates a model using a Support Vector Classifier (SVC) method as implemented in `scikit-learn <https://scikit-learn.org/stable/modules/generated/sklearn.svm.SVC.html>`__.
        * - :func:`compute_vqc <qbiocode.learning.compute_vqc.compute_vqc>`
          - This function computes a Variational Quantum Classifier (VQC) using the Qiskit Machine Learning library.
+       * - :func:`compute_tabpfn <qbiocode.learning.compute_tabpfn.compute_tabpfn>`
+         - This function generates a model using `TabPFN <https://github.com/PriorLabs/TabPFN>`__, a transformer pretrained on synthetic tabular tasks that classifies by in-context learning rather than by fitting parameters to your data.
+       * - :func:`compute_tabpfn_opt <qbiocode.learning.compute_tabpfn.compute_tabpfn_opt>`
+         - This function also generates a model using `TabPFN <https://github.com/PriorLabs/TabPFN>`__.
        * - :func:`compute_xgb <qbiocode.learning.compute_xgb.compute_xgb>`
          - This function generates a model using an Extreme Gradient Boositing (xgb) Classifier method as implemented in xgboost.
        * - :func:`compute_xgb_opt <qbiocode.learning.compute_xgb.compute_xgb_opt>`

@@ -50,11 +50,15 @@ models. Everything below is additive.
 | *(none)* | `pip install qbiocode` | Core library: embeddings (`pca`, `nmf`, `umap`, `tsne`, `spectral`, ...), PQK, classical + quantum models, `evaluate_graph`, `scale_train_test` |
 | `apps` | `pip install 'qbiocode[apps]'` | Hydra-driven CLIs for the QProfiler and QSage apps (`hydra-core`, `joblib`) |
 | `quvine` | `pip install 'qbiocode[quvine]'` | QuVINE quantum/classical graph embeddings — 83 methods reachable through `get_embeddings("quvine_*", ...)` |
+| `tabpfn` | `pip install 'qbiocode[tabpfn]'` | The `tabpfn` classical model — a pretrained tabular transformer. No API key or license acceptance needed for the pinned default; see below |
 | `docs` | `pip install 'qbiocode[docs]'` | Sphinx toolchain for building this documentation locally |
 | `dev` | `pip install 'qbiocode[dev]'` | `pytest`, `pytest-cov`, `black`, `isort`, `flake8`, `mypy` |
 | `all` | `pip install 'qbiocode[all]'` | Union of every extra above |
 
 Extras combine, so `pip install 'qbiocode[apps,quvine]'` is valid.
+
+`catboost` is *not* an extra: it is a core dependency, so the `catboost` model
+works from a plain `pip install qbiocode` exactly as `xgb` does.
 
 ### QuVINE graph embeddings
 
@@ -92,6 +96,97 @@ second deep-learning stack. On macOS, `pip install 'qbiocode[quvine]'` may need
 The `quvine` extra pins `setuptools<81` because `node2vec` imports
 `pkg_resources`, which setuptools 81 removed. If you install QuVINE into an
 environment that needs a newer setuptools, use a separate virtual environment.
+```
+
+### TabPFN
+
+TabPFN is an extra because of its weight: it brings `mlx`, `lightgbm`, `huggingface-hub`,
+`safetensors`, `einops` and `httpx` along with torch's ecosystem, and `import qbiocode` must
+not pull torch in. That is the only reason — it needs **no API key and no license
+acceptance**:
+
+```bash
+pip install 'qbiocode[tabpfn]'
+```
+
+QBioCode pins `model_version: v2`, whose weights are published under the Prior Labs License
+(Apache 2.0 plus an attribution clause) and download anonymously on first fit. So a first
+run needs network access, and nothing else.
+
+```{warning}
+**The model version is a licensing choice.** Only `v2` permits commercial use. The newer
+`v2.5`, `v2.6` and `v3` checkpoints are under per-version **non-commercial and
+non-production** licenses, and additionally require accepting that license against a Prior
+Labs account — which upstream does interactively, so they cannot be fetched unattended and
+an API key alone is not sufficient. Selecting one with `model_version` warns and names the
+license. See the table in the [configuration guide](apps/config.md).
+
+`v2` is the default because QBioCode is Apache-2.0 software whose users include companies.
+```
+
+```{note}
+**macOS:** a TabPFN fit maps torch's OpenMP runtime into a process that already has
+xgboost's, and the second one to open a parallel region dies below Python — exit 139, no
+traceback, a notebook reporting only "kernel died". QBioCode sets `OMP_NUM_THREADS=1` before
+importing TabPFN to prevent this, and warns that it has. Set the variable yourself before
+importing `qbiocode` to choose differently. CatBoost is unaffected: it uses its own thread
+pool.
+```
+
+### Supplying an API key (only for the restricted versions)
+
+If you opt into `v2.5`, `v2.6` or `v3`, accept the license at <https://ux.priorlabs.ai>
+(Licenses tab) and copy the API key from the Account page. Store it in a file **outside the
+repository**, which is both convenient (it survives a new shell and a notebook kernel
+started from a launcher) and the only way it cannot be committed:
+
+```bash
+python -c "from qbiocode.utils import write_token_template; print(write_token_template())"
+# -> ~/.config/qbiocode/tabpfn.json, created mode 0600
+# paste the key into its "token" field
+```
+
+QProfiler reads it automatically when `tabpfn` is in the model list, via the
+`tabpfn_json_path` config key. Elsewhere, call `qbiocode.utils.load_tabpfn_token()` before
+fitting. Exporting `TABPFN_TOKEN` still works and takes precedence.
+
+After that it runs unattended like any other model. To stay fully offline, point
+`model_path` at an already-downloaded checkpoint instead.
+
+```{warning}
+Keep the key out of the checkout. `~/.config/qbiocode/tabpfn.json` is the supported
+location precisely because a gitignored file inside the tree is *unlikely* to be
+committed, not unable to be. QBioCode never logs or prints the token;
+`qbiocode.utils.describe_token_source()` reports only whether one is configured and where
+it came from.
+```
+
+Without the extra, `import qbiocode` and every other model keep working; only `tabpfn`
+is affected, and it raises an actionable error naming the extra:
+
+```python
+>>> import qbiocode as qbc
+>>> qbc.compute_tabpfn(X_train, X_test, y_train, y_test, args)
+ImportError: TabPFN is not installed. It is an optional extra rather than a core
+dependency because of its weight: it brings torch's ecosystem along with
+mlx, lightgbm, huggingface-hub and safetensors.
+
+Install it with:
+  pip install "qbiocode[tabpfn]"
+
+No API key or license acceptance is needed: QBioCode pins model_version 'v2',
+whose weights are under the Prior Labs License (Apache 2.0 plus attribution)
+and download anonymously on first fit.
+```
+
+`qbiocode.learning.compute_tabpfn.tabpfn_is_available()` reports whether the extra is
+present without importing it — and importantly without importing `torch`, which
+QBioCode deliberately keeps out of processes that do not need it (see the OpenMP note
+below).
+
+```{note}
+TabPFN supports at most **10 classes**. Unlike its row and feature limits, that ceiling
+is fixed by the checkpoint and is not waived by `ignore_pretraining_limits`.
 ```
 
 ## Install with Conda
@@ -393,6 +488,16 @@ pip install .
 # Then re-import
 import qbiocode
 ```
+
+**Issue: a notebook kernel dies with no traceback on macOS**
+
+`xgboost`, `torch` and `qiskit-aer` each vendor their own copy of `libomp.dylib` under
+the same install name, and whichever OpenMP runtime initialises second can kill the
+process below Python — so there is no traceback, only "kernel died". `qbiocode`
+initialises xgboost's first (see `qbiocode.utils._openmp`), and `compute_tabpfn`
+imports `tabpfn` lazily so that merely importing QBioCode never maps torch's runtime
+in. If you hit it anyway, set `OMP_NUM_THREADS=1` **before** importing `qbiocode` or
+`torch`. CatBoost is unaffected: it uses its own thread pool rather than OpenMP.
 
 **Issue: XGBoost errors on macOS**
 ```bash

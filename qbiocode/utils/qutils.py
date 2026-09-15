@@ -505,7 +505,7 @@ def retrieve_probabilities(counts: dict) -> list:
     return [p0, p1]
 
 
-def execute_circuit(qc, n_shots: int = 8192, device: str = 'CPU'):
+def execute_circuit(qc, n_shots: int = 8192, device: str = 'CPU', seed: int = None):
     """
     Execute quantum circuit on Aer simulator.
     
@@ -554,5 +554,9 @@ def execute_circuit(qc, n_shots: int = 8192, device: str = 'CPU'):
     backend = AerSimulator(method='statevector', device=device, 
                           statevector_parallel_threshold=50)
     tqc = transpile(qc, backend, optimization_level=3)
-    result = backend.run([tqc], shots=n_shots).result()
+    # seed_simulator, without which the shot sampling is drawn from OS entropy. This call
+    # used to omit it, so `compute_qensemble`'s documented `seed` parameter reached the
+    # training-set selection but never the measurement -- every metric it reported drifted
+    # between runs at an identical seed, and nothing said why.
+    result = backend.run([tqc], shots=n_shots, seed_simulator=seed).result()
     return result.get_counts(tqc)

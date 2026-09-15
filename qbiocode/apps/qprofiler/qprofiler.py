@@ -226,6 +226,68 @@ def _validate_config(args, log):
 
 # Begin the main function and instatiate Hydra class
 # config_path=None allows --config-dir to work properly
+def _append_model_row(path, row):
+    """Append one model's result row to ``path``, widening the file if it has to.
+
+    ``ModelResults.csv`` is written incrementally -- one row per model, as each model
+    finishes -- so that a run interrupted half way still leaves usable output. The
+    obvious way to do that, ``csv.writer`` plus a header written when the file is
+    empty, is wrong as soon as two models contribute different keys, and QProfiler has
+    two that routinely do: a *tuned* classical model reports ``BestParams_Tuned`` while
+    an *untuned* one reports ``Model_Parameters``, and ``grid_search: True`` with
+    ``tune_quantum: False`` -- the natural way to run a sweep, since a quantum fit per
+    trial is expensive -- puts both in the same run.
+
+    The result was a file whose header was narrower than its later rows, which
+    ``pandas.read_csv`` refuses outright::
+
+        ParserError: Expected 150 fields in line 7, saw 151
+
+    so nothing downstream could read the results at all. Writing through
+    :class:`csv.DictWriter` against the header already on disk fixes that: a row that
+    introduces new columns rewrites the file with the union header and pads the earlier
+    rows, and a row missing a column writes an empty cell there rather than shifting
+    every later value left by one.
+
+    Widening rewrites the file, which is ``O(rows)``, but it happens at most once per
+    distinct key set -- in practice once, when the first untuned model follows a tuned
+    one -- so the cost does not grow with the length of the run.
+
+    Args:
+        path (str): Path to the CSV. Created with a header if absent or empty.
+        row (dict): Column name -> value for exactly one model on one
+            (dataset, iteration, embedding).
+    """
+    header = None
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        with open(path, newline='') as csvfile:
+            header = next(csv.reader(csvfile), None)
+
+    if header is None:
+        with open(path, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=list(row), restval='')
+            writer.writeheader()
+            writer.writerow(row)
+        return
+
+    added = [name for name in row if name not in header]
+    if not added:
+        # restval covers a row that is MISSING a column the header has, which is the
+        # other half of the same problem: without it, csv.writer would emit the row's
+        # values positionally and silently misalign every column after the gap.
+        with open(path, 'a', newline='') as csvfile:
+            csv.DictWriter(csvfile, fieldnames=header, restval='').writerow(row)
+        return
+
+    with open(path, newline='') as csvfile:
+        existing = list(csv.DictReader(csvfile))
+    with open(path, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=header + added, restval='')
+        writer.writeheader()
+        writer.writerows(existing)
+        writer.writerow(row)
+
+
 @hydra.main(config_path=None, config_name='config', version_base='1.1')
 def main(args):
     """
@@ -251,6 +313,27 @@ def main(args):
     # _validate_config exists to replace, and it reported one missing key where
     # the validator reports all of them at once.
     scaler_name = _validate_config(args, log)
+
+    # Authorise TabPFN's weight download before any worker starts, if the model was asked
+    # for. The token has to reach the estimator as $TABPFN_TOKEN, and setting it here puts
+    # it in the environment that joblib's workers inherit -- doing it inside the worker
+    # would mean reading the credentials file once per model per split. Only the *source*
+    # is logged; the token itself is never written to the log, which is committed into
+    # results directories and pasted into issues.
+    if "tabpfn" in args["model"]:
+        from qbiocode.utils.tabpfn_account import load_tabpfn_token
+
+        source = load_tabpfn_token(args)
+        if source:
+            log.info(f"TabPFN token {source}")
+        else:
+            log.warning(
+                "'tabpfn' is in the model list but no API token was found, so its "
+                "pretrained weights cannot be downloaded and the model will fail. "
+                "Put the key in ~/.config/qbiocode/tabpfn.json as {\"token\": \"...\"}, "
+                "set tabpfn_json_path in the config, or export TABPFN_TOKEN."
+            )
+
     log.info(f"The number of ML methods being parallelized is {min(args['n_jobs'], len(args['model']))}")
     log.info(f"Chosen backend for quantum algorithms is: {args['backend']}")
     # Normalize path separators for cross-platform compatibility
@@ -316,14 +399,33 @@ def main(args):
         y_map = dict(zip(y_encoded.astype(str), y.tolist()))
         summary.update({'label_mapping': y_map})
         
-        # Check for binary classification
+        # Binary classification is a hard requirement, not a preference.
+        #
+        # This used to warn and continue, calling multi-class support "experimental". It is
+        # not experimental, it is absent: `modeleval` scores every model with
+        # `roc_auc_score(y_test, y_predicted)` and passes no `multi_class`, so any dataset
+        # with more than two classes raised
+        #
+        #     ValueError: multi_class must be in ('ovo', 'ovr')
+        #
+        # several hundred lines later, from inside the metrics helper, after the embeddings
+        # had been computed and the models fitted. The warning therefore bought nothing: it
+        # invited the user to proceed into a failure that was certain, and then reported it
+        # against a parameter name they had never heard of. Refusing here names the dataset,
+        # the class count, and the fact that this is a boundary rather than a bug.
         n_classes = len(np.unique(y_encoded))
         if n_classes != 2:
-            log.warning(f"Dataset {file} has {n_classes} classes. QProfiler is currently optimized for binary classification.")
-            log.warning(f"Multi-class classification support is experimental. Results may vary.")
-            print(f"\n⚠️  WARNING: Dataset '{file}' has {n_classes} classes.")
-            print(f"   QProfiler is currently optimized for binary classification.")
-            print(f"   Multi-class support is experimental. Proceed with caution.\n")
+            raise ValueError(
+                f"Dataset {file!r} has {n_classes} classes, and QProfiler supports binary "
+                f"classification only. Its label mapping is {y_map}.\n\n"
+                f"This is a boundary of the tool rather than a defect: every model is scored "
+                f"through qbiocode.evaluation.modeleval, whose AUC calculation is binary-only, "
+                f"so a multi-class run cannot produce a result no matter which models are "
+                f"selected. Continuing would fail later, after the embeddings and fits had "
+                f"already been computed.\n\n"
+                f"To proceed, either restrict the dataset to two classes (a one-vs-rest or "
+                f"one-vs-one split of the labels above), or drop it from 'file_dataset'."
+            )
 
         # call and run evaluation functions
         df_dataset = pd.DataFrame(X)
@@ -400,20 +502,20 @@ def main(args):
                 data_key = '_'.join( [re.sub( r'\..*', '', file ), embed, str(args["n_components"]), str(iter)])
                 summary.update(model_run(X_train_emb, X_test_emb, y_train, y_test, data_key, args))
                 # print(summary)
+                # Snapshot the per-(dataset, iteration, embedding) part ONCE, then build
+                # each model's row from a fresh copy of it. Merging each model's results
+                # into the shared `model_results` instead -- which is what this did --
+                # let one model's columns persist into the next model's row: with
+                # `grid_search: True` and `tune_quantum: False`, pqk's row carried the
+                # preceding model's `BestParams_Tuned` value, so a naive-Bayes
+                # `var_smoothing` was reported as pqk's tuned hyperparameters. The rows
+                # are independent observations, so they must be built independently.
+                row_base = dict(model_results)
                 for outerkey, outervalue in summary.items():
-                    # print (outerkey, outervalue)
                     if outerkey.startswith("results_"):
-                        for inner_key, inner_value in outervalue[0].items():
-                            # print(f"{inner_key}: {inner_value}")
-                            # model_results[inner_key]=inner_value
-                            update = {inner_key:inner_value}
-                            model_results.update(**update)
-                            # Save model_results data
-                        with open('ModelResults.csv', 'a', newline='') as csvfile:
-                            model_results_write = csv.writer(csvfile)
-                            if csvfile.tell() == 0:
-                                model_results_write.writerow(model_results.keys())
-                            model_results_write.writerow(model_results.values())
+                        _append_model_row(
+                            'ModelResults.csv', {**row_base, **outervalue[0]}
+                        )
                 # Read existing summary data from the file, if any
                 try:
                     with open("results.pkl", "rb") as pklfile:

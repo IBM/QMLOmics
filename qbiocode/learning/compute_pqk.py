@@ -39,7 +39,12 @@ from sklearn import svm
 import qbiocode.utils.qutils as qutils
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
+from qbiocode.learning._tuning import (
+    build_search_space,
+    record_tuned_params,
+    run_function_study,
+)
 
 
 def compute_pqk(
@@ -48,7 +53,12 @@ def compute_pqk(
     y_train,
     y_test,
     args,
-    model="PQK",
+    # Lower case, matching the dispatch key. This default was "PQK", which was invisible
+    # while the body hardcoded its label -- but now that the label is honoured, a direct
+    # call with no model= would otherwise file results under a name no config can name.
+    # qc_winner_finder's quantum list was also written against the upper-case spelling
+    # while every real results table carries the lower-case one.
+    model="pqk",
     data_key="",
     verbose=False,
     encoding="Z",
@@ -436,23 +446,44 @@ def compute_pqk(
     projections_test = np.load(file_projection_test)
     projections_test = np.array(projections_test).reshape(len(projections_test), -1)
 
-    model = create_svc_model(args["seed"])
+    # `estimator`, not `model`. This assignment used to be `model = create_svc_model(...)`,
+    # which overwrote the `model` PARAMETER -- the label this function was told to file its
+    # results under -- with the fitted estimator object. The label was therefore gone
+    # before it could be used, and `method_pqk = "pqk"` on the next line was the
+    # workaround: a hardcoded label that ignored the argument. The visible consequence was
+    # that `compute_pqk_opt` passing model="pqk_opt" had no effect, so a TUNED PQK run
+    # produced `results_pqk` with model='pqk' -- byte-identical to an untuned one, leaving
+    # no way to tell from ModelResults.csv whether a search had run.
+    estimator = create_svc_model(args["seed"])
 
-    method_pqk = "pqk"
-    model.fit(projections_train, y_train)
-    y_predicted = model.predict(projections_test)
+    method_pqk = model
+    estimator.fit(projections_train, y_train)
+    y_predicted = estimator.predict(projections_test)
+    # `auc` is computed from these scores alone, never from y_predicted. The head is a
+    # RandomizedSearchCV over SVC, which delegates to `best_estimator_`; `probability`
+    # is not searched, so there is no predict_proba and extract_binary_scores falls
+    # through to decision_function. Scored on the *projections*, which is the space this
+    # estimator was fitted in -- the raw features would silently be the wrong width.
+    y_score = extract_binary_scores(estimator, projections_test)
 
     hyperparameters = {
         "feature_map": feature_map.__class__.__name__,
         "feature_map_reps": reps,
         "entanglement": entanglement,
-        "best_params": model.best_params_,
+        "best_params": estimator.best_params_,
         # Add other hyperparameters as needed
     }
     model_params = hyperparameters
 
     return modeleval(
-        y_test, y_predicted, beg_time, params=model_params, args=args, model=method_pqk, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        params=model_params,
+        args=args,
+        model=method_pqk,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -480,3 +511,99 @@ def create_svc_model(seed):
     )
 
     return svc_model
+
+
+def compute_pqk_opt(
+    X_train,
+    X_test,
+    y_train,
+    y_test,
+    args,
+    verbose=False,
+    # '_opt', so a DIRECT call is self-describing. model_run always passes
+    # model='pqk_opt' explicitly, but a caller using the default would otherwise
+    # produce a row labelled as untuned -- and modeleval infers `tuned` from this
+    # very string, so the label and the parameter column would BOTH be wrong.
+    model="pqk_opt",
+    data_key="",
+    encoding=None,
+    primitive=None,
+    entanglement=None,
+    reps=None,
+    *,
+    n_trials=10,
+    validation_split=0.25,
+):
+    """Tune PQK's hyperparameters with Optuna, then run it at the best ones found.
+
+    The quantum counterpart of the classical ``compute_*_opt`` functions, and driven by
+    the same ``gridsearch_pqk_args`` config block -- a list is a choice, a
+    ``{low, high}`` mapping is a range. It differs in how a candidate is scored: a
+    quantum fit builds an n-by-n fidelity kernel by circuit simulation, so scoring by
+    k-fold cross-validation would multiply an already expensive search by k. Each trial
+    is scored once, on a stratified holdout carved out of ``X_train``; the caller's test
+    set is never touched by the search.
+
+    Only reachable when the config sets both ``grid_search: True`` and
+    ``tune_quantum: True``. Tuning against a real device is refused unless
+    ``allow_hardware_tuning: True`` -- every trial would be a queued job.
+
+    Args:
+        X_train (array-like): Training data features. Split again internally to score
+            candidates; the final model is refitted on all of it.
+        X_test (array-like): Test data features, used only for the final evaluation.
+        y_train (array-like): Training data labels.
+        y_test (array-like): Test data labels.
+        args (dict): Run configuration. ``backend``, ``shots`` and ``seed`` are read
+            from it by the underlying quantum function.
+        verbose (bool): If True, prints additional information during execution.
+        model (str): Name of the model being used, default is 'PQK'.
+        data_key (str): Key for identifying the dataset.
+        encoding (list or dict): Feature-map values to search ('Z', 'ZZ', 'P'). None leaves it at the default.
+        primitive (list or dict): Qiskit primitives to search ('sampler', 'estimator'). None leaves it at the default.
+        entanglement (list or dict): Entanglement patterns to search ('linear', 'full', ...). None leaves it at the default.
+        reps (list or dict): Feature-map repetition counts to search. None leaves it at the default.
+        n_trials (int): Trial budget, default 10 -- an order of magnitude below the
+            classical default because each trial is a quantum fit. Lowered
+            automatically when the configured values describe fewer combinations.
+        validation_split (float): Fraction of the training data held out to score
+            candidates on, default 0.25.
+
+    Returns:
+        modeleval (dict): The evaluation of the model at the best hyperparameters found,
+        with the tuned values recorded in the results frame and the reported time
+        covering the whole search rather than only the final fit.
+    """
+    beg_time = time.time()
+
+    candidates = {
+        "encoding": encoding,
+        "primitive": primitive,
+        "entanglement": entanglement,
+        "reps": reps,
+    }
+
+    best_params = run_function_study(
+        compute_pqk,
+        build_search_space("pqk", candidates),
+        X_train,
+        y_train,
+        args,
+        model="pqk",
+        n_trials=n_trials,
+        seed=args.get("seed") if isinstance(args, dict) else None,
+        validation_split=validation_split,
+    )
+
+    frame = compute_pqk(
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        args,
+        model=model,
+        data_key=data_key,
+        verbose=verbose,
+        **best_params,
+    )
+    return record_tuned_params(frame, best_params, beg_time)

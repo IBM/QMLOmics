@@ -185,9 +185,19 @@ def test_every_third_party_import_under_qbiocode_is_declared():
                 if node.args and isinstance(node.args[0], ast.Constant):
                     roots.add(str(node.args[0].value).split(".")[0])
 
+    # Every tier that ships a runtime dependency, not just base and quvine. `tabpfn` is
+    # declared in requirements-tabpfn.txt, and was invisible to this scan until
+    # `qbiocode.utils.tabpfn_account` imported it with a real `from tabpfn... import`:
+    # `compute_tabpfn` reaches it through `importlib.import_module("tabpfn")`, a string the
+    # AST walk below cannot see. So this list must grow whenever a new optional tier is
+    # added, or the guard silently stops covering it.
     declared = {
         _distribution_of(spec)
-        for name in ("requirements-base.txt", "requirements-quvine.txt")
+        for name in (
+            "requirements-base.txt",
+            "requirements-quvine.txt",
+            "requirements-tabpfn.txt",
+        )
         for spec in _read_requirements(name)
     }
     undeclared = sorted(

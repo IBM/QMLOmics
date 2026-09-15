@@ -77,6 +77,7 @@ def _declares_itself_orphan(rel: str) -> bool:
     head = (SOURCE_DIR / rel).read_text(encoding="utf-8")[:512]
     return any(marker in head for marker in _ORPHAN_MARKERS)
 
+
 DOC_SUFFIXES = (".rst", ".md", ".ipynb")
 
 
@@ -165,13 +166,15 @@ def _document_exists(target: str) -> bool:
     existence when ``_sync_tutorials()`` runs during a build.
     """
     if target.startswith(GENERATED_TUTORIALS):
-        rest = target[len(GENERATED_TUTORIALS):]
-        return any(
-            (TUTORIAL_SOURCE / f"{rest}{suffix}").exists() for suffix in DOC_SUFFIXES
-        ) or (TUTORIAL_SOURCE / rest).exists()
-    return any(
-        (SOURCE_DIR / f"{target}{suffix}").exists() for suffix in DOC_SUFFIXES
-    ) or (SOURCE_DIR / target).exists()
+        rest = target[len(GENERATED_TUTORIALS) :]
+        return (
+            any((TUTORIAL_SOURCE / f"{rest}{suffix}").exists() for suffix in DOC_SUFFIXES)
+            or (TUTORIAL_SOURCE / rest).exists()
+        )
+    return (
+        any((SOURCE_DIR / f"{target}{suffix}").exists() for suffix in DOC_SUFFIXES)
+        or (SOURCE_DIR / target).exists()
+    )
 
 
 def _mocked_imports():
@@ -236,9 +239,10 @@ class TestToctree:
             if stem in reachable or doc in reachable:
                 continue
             orphans.append(doc)
-        assert not orphans, (
-            "documents in no toctree (Sphinx warns, and -W fails the build):\n  "
-            + "\n  ".join(sorted(orphans))
+        assert (
+            not orphans
+        ), "documents in no toctree (Sphinx warns, and -W fails the build):\n  " + "\n  ".join(
+            sorted(orphans)
         )
 
     def test_the_api_reference_is_rooted(self):
@@ -320,9 +324,9 @@ class TestConfPy:
     def test_version_matches_the_package(self):
         """conf.py hardcoded 0.0.1 while the package declared 0.1.0."""
         conf = (SOURCE_DIR / "conf.py").read_text(encoding="utf-8")
-        assert re.search(r"^release\s*=\s*_package_version\(\)", conf, re.M), (
-            "release must be read from qbiocode/version.py, not hardcoded"
-        )
+        assert re.search(
+            r"^release\s*=\s*_package_version\(\)", conf, re.M
+        ), "release must be read from qbiocode/version.py, not hardcoded"
         version_py = (REPO_ROOT / "qbiocode" / "version.py").read_text(encoding="utf-8")
         declared = re.search(r"^__version__\s*=\s*[\"']([^\"']+)[\"']", version_py, re.M)
         assert declared, "qbiocode/version.py declares no __version__"
@@ -334,9 +338,7 @@ class TestConfPy:
                     "import os, re",
                     "_CONF_DIR = os.path.dirname(os.path.abspath(__file__))",
                     "_REPO_ROOT = os.path.dirname(os.path.dirname(_CONF_DIR))",
-                    re.search(
-                        r"^def _package_version\(\):.*?(?=^\S)", conf, re.M | re.S
-                    ).group(0),
+                    re.search(r"^def _package_version\(\):.*?(?=^\S)", conf, re.M | re.S).group(0),
                     "parsed = _package_version()",
                 ]
             ),
@@ -351,9 +353,9 @@ class TestConfPy:
         # extra cannot import the modules it is documenting.
         from qbiocode.apps.quvine._deps import OPTIONAL_DEPENDENCIES
 
-        assert set(OPTIONAL_DEPENDENCIES) <= names, (
-            f"unmocked optional imports: {sorted(set(OPTIONAL_DEPENDENCIES) - names)}"
-        )
+        assert (
+            set(OPTIONAL_DEPENDENCIES) <= names
+        ), f"unmocked optional imports: {sorted(set(OPTIONAL_DEPENDENCIES) - names)}"
         # TensorFlow appears nowhere in the tree; mocking it hid that fact.
         assert "tensorflow" not in names and "keras" not in names
 
@@ -424,9 +426,9 @@ class TestGeneratedTutorialTree:
 
     def test_the_generated_tree_is_ignored(self):
         ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-        assert "/docs/source/tutorials/" in ignored, (
-            ".gitignore must exclude the generated tutorial tree"
-        )
+        assert (
+            "/docs/source/tutorials/" in ignored
+        ), ".gitignore must exclude the generated tutorial tree"
         try:
             check = subprocess.run(
                 ["git", "check-ignore", "-q", "docs/source/tutorials/QSage/qsage.ipynb"],
@@ -449,7 +451,7 @@ class TestGeneratedTutorialTree:
         long after the notebook was added. Caught here instead.
         """
         published = {
-            target[len(GENERATED_TUTORIALS):] + ".ipynb"
+            target[len(GENERATED_TUTORIALS) :] + ".ipynb"
             for target in _reachable_documents()
             if target.startswith(GENERATED_TUTORIALS)
         }
@@ -461,9 +463,9 @@ class TestGeneratedTutorialTree:
 
     def test_conf_py_generates_the_tree_safely(self):
         conf = (SOURCE_DIR / "conf.py").read_text(encoding="utf-8")
-        assert 'app.connect("builder-inited", _sync_tutorials)' in conf, (
-            "the sync hook is not wired up, so no tutorial page would be built"
-        )
+        assert (
+            'app.connect("builder-inited", _sync_tutorials)' in conf
+        ), "the sync hook is not wired up, so no tutorial page would be built"
         # The marker guard is the reason this hook is allowed to rmtree at all.
         assert "_TUTORIAL_MARKER" in conf and "shutil.rmtree" in conf
         # tutorial/QEnsemble/README.md must not be copied: myst_parser would read
@@ -541,6 +543,7 @@ class TestCiWorkflow:
     @staticmethod
     def _workflow():
         import yaml
+
         path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
         return yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -562,3 +565,218 @@ class TestCiWorkflow:
         """Without it, Pages drops every _-prefixed Sphinx directory."""
         steps = self._workflow()["jobs"]["deploy-docs"]["steps"]
         assert any(".nojekyll" in str(step.get("run", "")) for step in steps)
+
+
+# Config keys the shipped config.yaml offers that the documentation never mentions.
+# Each entry is a debt record rather than a permanent exemption -- document the key and
+# delete its line. All of these predate the Optuna work; the point of the assertion below
+# is that the list does not grow.
+UNDOCUMENTED_CONFIG_KEYS = {
+    "NN_depth",
+    "dt_args",
+    "gridsearch_dt_args",
+    "gridsearch_lr_args",
+    "gridsearch_mlp_args",
+    "gridsearch_nb_args",
+    "lr_args",
+    "mlp_args",
+    "multi_class",
+    "nb_args",
+}
+
+
+class TestEveryConfigKeyIsDocumented:
+    """A key you can set but cannot look up is a key nobody will use correctly.
+
+    Adding a config key and forgetting the docs is invisible: the key works, the yaml
+    parses, and the only symptom is a user who cannot find out what it does. This caught
+    exactly that -- `tune_quantum` and friends were documented, but the five
+    `gridsearch_<quantum model>_args` block names, both projection-cache directories and
+    the `BestParams_Tuned` results column were not.
+    """
+
+    @staticmethod
+    def _documentation():
+        return "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((DOCS_DIR / "source").rglob("*"))
+            if path.suffix in {".md", ".rst"}
+        )
+
+    @staticmethod
+    def _shipped_keys():
+        import yaml
+
+        config = yaml.safe_load(
+            (REPO_ROOT / "qbiocode" / "apps" / "qprofiler" / "configs" / "config.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        # `hydra` is the runner's own block, not a QBioCode setting.
+        return {key for key in config if key != "hydra"}
+
+    def test_no_new_config_key_is_undocumented(self):
+        documentation = self._documentation()
+        missing = {key for key in self._shipped_keys() if key not in documentation}
+        unexpected = missing - UNDOCUMENTED_CONFIG_KEYS
+        assert not unexpected, (
+            "config.yaml keys that appear nowhere in docs/source: "
+            f"{sorted(unexpected)}. Document them, or add them to "
+            "UNDOCUMENTED_CONFIG_KEYS with the intent to."
+        )
+
+    def test_the_debt_list_has_no_stale_entries(self):
+        """A documented key left on the list makes the list stop meaning anything."""
+        documentation = self._documentation()
+        shipped = self._shipped_keys()
+        stale = {
+            key for key in UNDOCUMENTED_CONFIG_KEYS if key not in shipped or key in documentation
+        }
+        assert not stale, (
+            f"UNDOCUMENTED_CONFIG_KEYS entries that are now documented (or gone from "
+            f"config.yaml): {sorted(stale)}. Delete them from the list."
+        )
+
+
+class TestTheModelDocsMatchTheCode:
+    """Prose about the models, checked against the models.
+
+    Added after the documentation drifted twice in one change: TabPFN was pinned to the
+    commercially-usable ``v2`` weights, which need no API token and no license acceptance,
+    but ``README.md``, ``profiler.rst``, ``tutorials.md``, two requirements files and the
+    conda recipe all still said a license acceptance was required. Nothing failed, because
+    nothing was checking. A stale requirement in a README is worse than an undocumented
+    one -- it sends a reader off to satisfy a condition that no longer exists, or worse,
+    to accept a licence they did not need to accept.
+    """
+
+    #: Docs a user reads before running anything.
+    USER_FACING = (
+        "README.md",
+        "docs/source/installation.md",
+        "docs/source/apps/config.md",
+        "docs/source/apps/profiler.rst",
+        "docs/source/tutorials.md",
+    )
+
+    @staticmethod
+    def _text(relative):
+        return (REPO_ROOT / relative).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _dispatch_keys():
+        """The model names ``model_run`` accepts, read out of its own table."""
+        source = (REPO_ROOT / "qbiocode" / "evaluation" / "model_run.py").read_text()
+        block = source.split("compute_ml_dict = {")[1].split("}")[0]
+        keys = re.findall(r'"([a-z_0-9]+)":\s*compute_', block)
+        assert keys, "could not read compute_ml_dict out of model_run.py"
+        return {k for k in keys if not k.endswith("_opt")}
+
+    def test_every_dispatchable_model_is_in_the_config_table(self):
+        """The table in config.md is where a user picks names for ``model:``."""
+        table = self._text("docs/source/apps/config.md")
+        missing = sorted(name for name in self._dispatch_keys() if f"`{name}`" not in table)
+        assert not missing, (
+            f"models accepted by model_run but absent from the model table in "
+            f"docs/source/apps/config.md: {missing}"
+        )
+
+    @pytest.mark.parametrize("relative", USER_FACING)
+    def test_no_document_demands_a_tabpfn_token_without_saying_the_default_needs_none(
+        self, relative
+    ):
+        """The exact drift that happened: 'TabPFN requires a license acceptance', full stop.
+
+        It is true only of the opt-in ``v2.5``/``v2.6``/``v3`` checkpoints. Any document
+        that raises the subject at all must also say that the pinned default does not need
+        one, or a reader will conclude they have to accept a non-commercial licence.
+        """
+        text = self._text(relative)
+        if "tabpfn" not in text.lower():
+            pytest.skip(f"{relative} does not mention TabPFN")
+        lowered = text.lower()
+        raises_the_subject = any(
+            phrase in lowered
+            for phrase in ("license acceptance", "licence acceptance", "tabpfn_token", "api key")
+        )
+        if not raises_the_subject:
+            return
+        # Checked structurally rather than by matching an affirmative phrasing: a document
+        # that actually explains the situation names the pinned version, and "no API key" /
+        # "nor an API key" / "needs none" are all correct ways to say the same thing. Only
+        # the version string is a reliable signal that the split is being described at all.
+        from qbiocode.learning.compute_tabpfn import TABPFN_DEFAULT_VERSION
+
+        assert TABPFN_DEFAULT_VERSION in lowered, (
+            f"{relative} discusses a TabPFN token or licence acceptance without naming the "
+            f"pinned default version ({TABPFN_DEFAULT_VERSION!r}), which needs neither. A "
+            f"reader is left believing they must accept a non-commercial licence to use "
+            f"TabPFN at all."
+        )
+
+    @pytest.mark.parametrize(
+        "relative", ("docs/source/apps/config.md", "docs/source/installation.md")
+    )
+    def test_the_licence_difference_between_versions_is_documented(self, relative):
+        """Choosing a model version is a licensing decision; both guides must say so."""
+        text = self._text(relative).lower()
+        assert "non-commercial" in text, (
+            f"{relative} does not mention that the newer TabPFN checkpoints are "
+            f"non-commercial, so nothing warns a reader off them"
+        )
+        assert "model_version" in text, f"{relative} does not name the model_version key"
+
+    def test_the_documented_default_version_is_the_pinned_one(self):
+        """Docs naming a default must name the one the code actually uses."""
+        from qbiocode.learning.compute_tabpfn import TABPFN_DEFAULT_VERSION
+
+        for relative in ("docs/source/apps/config.md", "docs/source/installation.md"):
+            assert TABPFN_DEFAULT_VERSION in self._text(relative), (
+                f"{relative} does not mention the pinned default model version "
+                f"{TABPFN_DEFAULT_VERSION!r}"
+            )
+
+    def test_the_new_learners_reach_the_readme_and_the_conda_recipe(self):
+        """Both list the classical baselines, and both were stale for a while."""
+        for relative in ("README.md", "conda-recipe/meta.yaml"):
+            text = self._text(relative).lower()
+            for model in ("catboost", "tabpfn"):
+                assert model in text, f"{relative} does not mention {model}"
+
+    def test_the_sage_docs_list_every_sage_type(self):
+        """``sage.rst`` documented only random_forest and mlp.
+
+        It never mentioned ``xgboost_optuna`` either, so this was stale before CatBoost was
+        added -- which is exactly why it needs a test rather than a careful reader. A user
+        reading only the docs would not know two of the four surrogates existed.
+        """
+        source = (REPO_ROOT / "qbiocode" / "apps" / "sage" / "sage.py").read_text()
+        block = source.split("valid_sage_types = [")[1].split("]")[0]
+        declared = re.findall(r"'([a-z_]+)'", block)
+        assert declared, "could not read valid_sage_types out of sage.py"
+        docs = self._text("docs/source/apps/sage.rst")
+        missing = [name for name in declared if name not in docs]
+        assert not missing, (
+            f"sage_types accepted by train_sub_sages but absent from "
+            f"docs/source/apps/sage.rst: {missing}"
+        )
+
+    def test_the_sage_docs_list_every_classical_model_it_can_predict_for(self):
+        """QSage learns from QProfiler results, so its model list must match the dispatch."""
+        docs = self._text("docs/source/apps/sage.rst").lower()
+        section = docs.split("**classical:**")[1].split("**quantum:**")[0]
+        for model in ("xgboost", "catboost", "tabpfn"):
+            assert model in section, (
+                f"sage.rst's classical model list omits {model}, which QProfiler can run "
+                f"and therefore QSage can be trained on"
+            )
+
+    def test_catboost_is_not_described_as_optional(self):
+        """It is a core dependency; calling it an extra would send people to install it."""
+        for relative in self.USER_FACING:
+            text = self._text(relative)
+            for phrase in ('pip install "qbiocode[catboost]"', "qbiocode[catboost]"):
+                assert phrase not in text, (
+                    f"{relative} refers to a [catboost] extra, which does not exist -- "
+                    f"catboost is a base dependency"
+                )

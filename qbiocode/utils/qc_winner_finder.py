@@ -30,19 +30,39 @@ def qml_winner(results_df, rawevals_df, output_dir, tag):
     # pull in the raw evaluations
     rawevals = rawevals_df.copy()
     # first, compute mean across all splits
-    if "Model_Parameters" in df.columns:
-        df_across_split = (
-            df.groupby(["Dataset", "embeddings", "model", "Model_Parameters"])["f1_score"]
-            .mean()
-            .reset_index()
+    # model_evaluation.py writes exactly one parameter column, named for the branch
+    # that produced it: 'Model_Parameters' with tuning off, 'BestParams_Tuned' with it
+    # on -- or 'BestParams_GridSearch', the name that branch used before Optuna
+    # replaced the exhaustive grid, which every older ModelResults.csv still carries.
+    # The previous if/else assumed the absence of one meant the presence of the other,
+    # so any third name became a KeyError raised from inside groupby.
+    parameter_columns = [
+        name for name in ("Model_Parameters", "BestParams_Tuned", "BestParams_GridSearch")
+        if name in df.columns
+    ]
+    if not parameter_columns:
+        raise ValueError(
+            "None of the model-parameter columns ('Model_Parameters', "
+            "'BestParams_Tuned', 'BestParams_GridSearch') are present in the results "
+            f"table, which has {sorted(df.columns)}. Pass the ModelResults.csv written "
+            "by QProfiler."
         )
-    else:
-        # if 'Model_Parameters' is not present, this means you ran a grid search and this column will be named 'BestParams_GridSearch' instead
-        df_across_split = (
-            df.groupby(["Dataset", "embeddings", "model", "BestParams_GridSearch"])["f1_score"]
-            .mean()
-            .reset_index()
-        )
+    # Coalesced, not `parameter_columns[0]`. A single run can carry BOTH names now that
+    # model_evaluation decides the column per row rather than per run (a tuned classical
+    # model reports 'BestParams_Tuned' while an untuned quantum one in the same run
+    # reports 'Model_Parameters'). Grouping on whichever name happened to sort first left
+    # NaN in that key for every row belonging to the other column -- and pandas' groupby
+    # drops NaN keys by default, so those rows would disappear from the winner table
+    # silently. Taking the first non-null across the candidates recovers each row's real
+    # parameters whichever column holds them.
+    parameters = df[parameter_columns].bfill(axis=1).iloc[:, 0]
+    df_across_split = (
+        df.assign(_parameters=parameters)
+        .groupby(["Dataset", "embeddings", "model", "_parameters"])["f1_score"]
+        .mean()
+        .reset_index()
+        .rename(columns={"_parameters": parameter_columns[0]})
+    )
     # now, extract the best results per method across embedding and iteration
     df_best = df_across_split.groupby(["Dataset", "model"])["f1_score"].max().reset_index()
     # df_best = df_across_split.groupby(['Dataset', 'model', 'Model_Parameters'])['f1_score'].max().reset_index()
@@ -68,13 +88,22 @@ def qml_winner(results_df, rawevals_df, output_dir, tag):
     best_per_dataset = df_best.loc[df_best.groupby("Dataset")["f1_score"].idxmax()]
     # best_per_dataset = df_across_split.loc[df_across_split.groupby('Dataset')['f1_score'].idxmax()]
     # create list of qml methods
-    qml_list = ["QSVC", "QNN", "VQC", "PQK"]
-    # qml_winner = df_best[df_best['Dataset'].isin(best_per_dataset[best_per_dataset['model'].isin(qml_list)]['Dataset'])]
-    qml_winner = df_across_split[
-        df_across_split["Dataset"].isin(
-            best_per_dataset[best_per_dataset["model"].isin(qml_list)]["Dataset"]
-        )
+    # Matched on the lower-cased first token of the label, not against a fixed list of
+    # exact spellings. The list used to be ["QSVC", "QNN", "VQC", "PQK"] compared with
+    # `.isin()`, which could never match: every label QProfiler writes is lower case, so
+    # this branch was dead on real output and qml_winners.csv came back empty from every
+    # genuine quantum run. Two further spellings it could not have matched either way --
+    # 'qpl' was absent from the list entirely, and a tuned run is labelled '<name>_opt'
+    # ('qpl_opt_<head>' for QPL, which fans out one column per classical head).
+    qml_families = {"qsvc", "qnn", "vqc", "pqk", "qpl"}
+
+    def _is_quantum(label):
+        return str(label).lower().split("_", 1)[0] in qml_families
+
+    quantum_datasets = best_per_dataset.loc[
+        best_per_dataset["model"].map(_is_quantum), "Dataset"
     ]
+    qml_winner = df_across_split[df_across_split["Dataset"].isin(quantum_datasets)]
     if not qml_winner.empty:
         bestmethod = qml_winner.groupby("Dataset")["f1_score"].idxmax()
         qc_method_and_score = qml_winner.loc[bestmethod]

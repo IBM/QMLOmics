@@ -12,8 +12,8 @@ QProfiler is a comprehensive tool that goes beyond simple model evaluation. It p
    - **Data Complexity**: Computes intrinsic dataset characteristics to understand model behavior
 
 📊 **What QProfiler Does**
-   1. **Runs Multiple Models**: Evaluates classical (RF, SVM, LR, etc.) and quantum (QSVC, PQK, VQC) algorithms
-   2. **Analyzes Data Complexity**: Computes 15+ complexity measures before model training
+   1. **Runs Multiple Models**: Evaluates classical (RF, SVM, LR, XGBoost, CatBoost, TabPFN, etc.) and quantum (QSVC, PQK, VQC) algorithms
+   2. **Analyzes Data Complexity**: Computes 125 complexity measures before model training
    3. **Correlates Results**: Links model performance to data characteristics
    4. **Automates Workflows**: Handles data splitting, scaling, encoding, and evaluation
 
@@ -183,6 +183,74 @@ In data mining and machine learning, we can distinguish between two fundamental 
 
 QProfiler automatically computes the following complexity measures for each dataset to characterize its intrinsic properties and predict model performance.
 
+.. admonition:: Where these numbers come from
+   :class: note
+
+   Most of the measures below are extracted with `pyMFE
+   <https://github.com/ealcobaca/pymfe>`_ and appear in the output with an ``mfe.``
+   prefix (``mfe.var.mean``, ``mfe.f1.mean``, ...). The rest are computed directly by
+   :mod:`qbiocode.evaluation.dataset_evaluation` because pyMFE has no equivalent:
+   intrinsic dimension, condition number, Fisher discriminant ratio, coefficient of
+   variation, low-variance feature count, non-zero entry count, mean log kernel
+   density, Isomap reconstruction error and fractal dimension.
+
+   QBioCode uses a **curated subset** of pyMFE's ~105 meta-features, not all of them.
+   A large fraction are unusable on the data QProfiler profiles -- all-numeric,
+   binary-labelled, and frequently with far more features than samples -- either
+   because they are undefined (and pyMFE reports that as a silent ``NaN``), because
+   they collapse to a constant, or because they are quadratic in the feature count and
+   so intractable on an omics matrix. Every exclusion is recorded with its measured
+   reason in :mod:`qbiocode.evaluation.mfe_features`, and
+   ``tests/test_dataset_evaluation.py`` keeps them excluded.
+
+Classification Complexity (Lorena et al. 2019)
+----------------------------------------------
+
+The F, L, N, T and C families measure how hard the classes are to separate, rather
+than how the data is distributed. ``mfe.f1``--``mfe.f4`` measure feature overlap
+between classes; ``mfe.l1``--``mfe.l3`` measure how far the problem is from linearly
+separable; ``mfe.n1``--``mfe.n4``, ``mfe.lsc``, ``mfe.density``, ``mfe.cls_coef`` and
+``mfe.hubs`` describe the neighbourhood and adjacency-graph structure around the class
+boundary; ``mfe.t3``/``mfe.t4`` are PCA-based dimensionality ratios; ``mfe.c2`` is the
+class-imbalance ratio.
+
+.. note::
+
+   The L family, ``mfe.f2`` and ``mfe.f4`` are informative when :math:`p < n` but
+   degenerate when :math:`p \ge n`: a dataset with more features than samples is
+   almost always linearly separable, so L1, L2, L3 and F4 all go to zero regardless of
+   how hard the problem really is. They are most useful on the *embedded* data, where
+   the dimension is small. Read them alongside ``mfe.attr_to_inst``.
+
+*Reference:* Lorena, A. C., et al. (2019). "How Complex is your classification
+problem? A survey on measuring classification complexity." *ACM Computing Surveys*,
+52(5), 1-34.
+
+Landmarking
+-----------
+
+The accuracy of deliberately cheap learners on the dataset itself -- a 1-nearest
+neighbour (``mfe.one_nn``), naive Bayes (``mfe.naive_bayes``), linear discriminant
+analysis (``mfe.linear_discr``), single decision-tree nodes (``mfe.best_node``,
+``mfe.worst_node``) and a 1-NN restricted to the most informative features
+(``mfe.elite_nn``). These are the most directly useful features for
+:doc:`QSage <sage>`: rather than describing the data and hoping the description
+predicts model performance, a landmark *is* a cheap measurement of model performance.
+
+*Reference:* Pfahringer, B., Bensusan, H., & Giraud-Carrier, C. (2000). "Meta-learning
+by landmarking various learning algorithms." *ICML*, 743-750.
+
+Model-Based, Clustering and Concept Measures
+--------------------------------------------
+
+``mfe.leaves``, ``mfe.nodes``, ``mfe.tree_depth`` and their relatives describe the
+shape of a decision tree induced on the data -- a deeper, bushier tree implies a more
+convoluted decision boundary. ``mfe.sil``, ``mfe.ch``, ``mfe.vdb``, ``mfe.vdu``,
+``mfe.int`` and ``mfe.pb`` are cluster-validity indices measuring how well the class
+labels line up with the data's own geometry. ``mfe.conceptvar``, ``mfe.wg_dist``,
+``mfe.impconceptvar`` and ``mfe.cohesiveness`` measure how variable the labels are
+among near neighbours.
+
 Dimensionality Metrics
 ----------------------
 
@@ -310,15 +378,24 @@ Separability Measures
    
    *Reference:* Cover, T. M., & Thomas, J. A. (2006). *Elements of Information Theory*. Wiley-Interscience.
 
-**Total Correlation**
-   Sum of absolute correlations between all feature pairs (excluding self-correlation). Indicates feature redundancy and multicollinearity in the dataset.
-   
+**Feature Correlation** (``mfe.cor``, ``mfe.nr_cor_attr``)
+   Feature redundancy and multicollinearity. ``mfe.cor.mean`` is the *mean* absolute
+   correlation over feature pairs and ``mfe.nr_cor_attr`` the proportion of pairs whose
+   absolute correlation exceeds 0.5:
+
    .. math::
-      
-      TC = \sum_{i \neq j} |\rho_{ij}|
-   
+
+      \overline{|\rho|} = \frac{2}{p(p-1)}\sum_{i < j} |\rho_{ij}|
+
    where :math:`\rho_{ij}` is the correlation between features :math:`i` and :math:`j`.
-   
+
+   .. note::
+
+      This replaces an earlier ``Total Correlations`` column that reported the
+      unnormalized :math:`\sum_{i \neq j} |\rho_{ij}|`. That sum grows with
+      :math:`p^2`, so it was dominated by the feature count and not comparable between
+      datasets of different widths -- which is exactly the comparison QSage makes.
+
    *Reference:* Watanabe, S. (1960). "Information theoretical analysis of multivariate correlation." *IBM Journal of Research and Development*, 4(1), 66-82.
 
 **Log Kernel Density**
@@ -411,7 +488,7 @@ The ``config.yaml`` file controls all aspects of the QProfiler workflow:
    .. grid-item-card:: 🤖 Model Selection
       :class-header: bg-warning text-dark
 
-      - Classical models (SVC, RF, LR, etc.)
+      - Classical models (SVC, RF, LR, XGBoost, CatBoost, TabPFN, etc.)
       - Quantum models (QSVC, VQC, PQK)
       - Hyperparameter grids
 
@@ -537,38 +614,126 @@ Key Configuration Sections
 
 Available models:
 
-- **Classical:** ``svc``, ``dt``, ``lr``, ``nb``, ``rf``, ``mlp``
-- **Quantum:** ``qsvc``, ``vqc``, ``qnn``, ``pqk``
+- **Classical:** ``svc``, ``dt``, ``lr``, ``nb``, ``rf``, ``mlp``, ``xgb``,
+  ``catboost``, ``tabpfn``
+- **Quantum:** ``qsvc``, ``vqc``, ``qnn``, ``pqk``, ``qpl``
+
+.. list-table:: Classical learners and what each brings
+   :header-rows: 1
+   :widths: 12 26 62
+
+   * - Key
+     - Model
+     - Capabilities and caveats
+   * - ``svc``
+     - Support Vector Classifier
+     - Kernel methods (``linear``, ``rbf``, ``poly``, ``sigmoid``); scales poorly past a
+       few thousand samples.
+   * - ``dt``
+     - Decision Tree
+     - Fast, interpretable, high variance. A useful floor rather than a contender.
+   * - ``lr``
+     - Logistic Regression
+     - Linear baseline with ``l1``/``l2`` penalties; the reference point for whether a
+       dataset needs anything more.
+   * - ``nb``
+     - Gaussian Naive Bayes
+     - Effectively parameter-free (only ``var_smoothing``); strong when features really
+       are near-independent.
+   * - ``rf``
+     - Random Forest
+     - Robust default on tabular data, tolerant of irrelevant features, no scaling needed.
+   * - ``mlp``
+     - Multi-Layer Perceptron
+     - Learns feature interactions; needs scaling and the most tuning of the classical set.
+   * - ``xgb``
+     - XGBoost
+     - Gradient boosting, usually the strongest classical baseline on wide tables. On
+       macOS it needs ``libomp``; see the installation guide.
+   * - ``catboost``
+     - CatBoost
+     - Gradient boosting with symmetric trees and ordered boosting, which often behaves
+       differently from XGBoost on small, wide tables -- worth running both.
+       **Caveat:** ``subsample`` and ``bagging_temperature`` belong to incompatible
+       bootstrap schemes whose default depends on ``loss_function``; QBioCode pins the
+       scheme for you and rejects a contradictory block up front.
+   * - ``tabpfn``
+     - TabPFN (pretrained transformer)
+     - Classifies by in-context learning: the weights are frozen and pretrained on
+       synthetic tabular tasks, so there is no training and often no tuning needed --
+       frequently competitive out of the box on small datasets, which is the regime
+       QProfiler targets. **Requires** the ``[tabpfn]`` extra -- but no API key and no
+       license acceptance: QBioCode pins ``model_version: v2``, whose weights are under the
+       Prior Labs License (Apache 2.0 plus attribution). The newer ``v2.5``/``v2.6``/``v3``
+       checkpoints are **non-commercial and non-production** and are opt-in, warning when
+       selected. **Limits:** at most 10 classes (not waivable), and 50,000 rows /
+       2,000 features before accuracy degrades.
 
 .. code-block:: yaml
 
     # Run all models
-    model: ['svc', 'dt', 'lr', 'nb', 'rf', 'mlp',
+    model: ['svc', 'dt', 'lr', 'nb', 'rf', 'mlp', 'xgb', 'catboost',
             'qsvc', 'vqc', 'qnn', 'pqk']
-    
+
     # Or select specific models
     model: ['rf', 'qsvc', 'pqk']
 
+.. note::
+    ``tabpfn`` is absent from the "run all" line above on purpose. It needs an optional
+    extra and a manual license step, so a config naming it fails on a machine where
+    those have not been done:
+
+    .. code-block:: bash
+
+        pip install "qbiocode[tabpfn]"
+        # accept at https://ux.priorlabs.ai (Licenses tab), then:
+        export TABPFN_TOKEN="<your api key>"
+
+    Add ``'tabpfn'`` to ``model`` once the weights are reachable. Every other model,
+    and ``import qbiocode`` itself, works without the extra.
+
+Each classical model has an ``_opt`` twin selected by ``grid_search: True`` rather than
+by naming it in ``model``; see **Hyperparameter Configuration** below. The classical
+learners are also available as heads on a quantum projection through ``qpl``, whose
+``classical_models`` defaults to ``['rf', 'mlp', 'svc', 'lr', 'xgb', 'catboost']``.
+
 **6. Hyperparameter Configuration**
 
-Each model can have standard parameters and grid search parameters:
+Each model can have standard parameters and tuned parameters:
 
 .. code-block:: yaml
+
+    grid_search: True     # tune hyperparameters
+    tuner: optuna         # 'optuna' (default) or 'grid'
+    n_trials: 50          # Optuna's trial budget
+    cross_validation: 5
 
     # Standard parameters
     svc_args:
       C: 0.01
       gamma: 0.1
       kernel: 'linear'
-    
-    # Grid search parameters
+
+    # Tuned parameters: a list is a choice, a {low, high} mapping is a range
     gridsearch_svc_args:
-      C: [0.1, 1, 10, 100]
-      gamma: [0.001, 0.01, 0.1, 1]
+      C: {low: 0.001, high: 100, log: true}
+      gamma: {low: 0.0001, high: 1, log: true}
       kernel: ['linear', 'rbf', 'poly', 'sigmoid']
 
+``tuner: optuna`` spends ``n_trials`` fits, steered by a TPE sampler.
+``tuner: grid`` restores the exhaustive ``GridSearchCV`` sweep over every
+combination, which is what to use when reproducing a number published against it.
+Ranges need ``tuner: optuna``; under ``tuner: grid`` every entry must be a list.
+
 .. important::
-    **For quantum models:** Grid search requires generating separate config files for each parameter combination.
+    **For quantum models:** they now tune through the same ``gridsearch_<model>_args``
+    blocks, but only when ``tune_quantum: True`` is set alongside ``grid_search: True``
+    -- each trial is a quantum fit, so it is off by default. Their budget is
+    ``n_trials_quantum`` (default 10) and each candidate is scored on one stratified
+    holdout (``validation_split``) rather than on ``cross_validation`` folds. Tuning
+    against a real device is refused unless ``allow_hardware_tuning: True``.
+
+    To sweep them **exhaustively** instead, generate separate config files for each parameter combination.
     Use the :func:`qbiocode.utils.generate_qml_experiment_configs` utility function:
     
     .. code-block:: python
@@ -649,7 +814,8 @@ A complete example ``config.yaml`` is available at: `apps/qprofiler/configs/conf
     
     - Always set random seeds for reproducibility
     - Start with a small subset of models to test configuration
-    - Use grid search for classical models, separate configs for quantum models
+    - Use ``grid_search: True`` for classical models, separate configs for quantum models
+    - Leave ``tuner`` at ``optuna`` unless reproducing a pre-Optuna result
     - Monitor quantum backend availability before large runs
     - Save configurations with descriptive names for different experiments
 

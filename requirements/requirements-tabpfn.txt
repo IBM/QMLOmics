@@ -1,0 +1,39 @@
+# ==========================================================================
+# TabPFN classical learner -- the [tabpfn] extra
+# ==========================================================================
+# Installs the dependency set for qbiocode.learning.compute_tabpfn, which adds
+# `tabpfn` to the classical model list alongside rf/svc/xgb/catboost.
+#
+#   pip install "qbiocode[tabpfn]"        # from a release/checkout
+#   pip install -r requirements/requirements-tabpfn.txt
+#
+# An extra rather than a base dependency because of its WEIGHT: it brings mlx,
+# lightgbm, huggingface-hub, safetensors, einops and httpx along with torch's
+# ecosystem, and `import qbiocode` must not pull torch in (see
+# tests/test_openmp_import_order.py). Roughly 70 MB of dependencies for one
+# optional model is not something to impose on every install.
+#
+# It needs NO API token and NO license acceptance. QBioCode pins model_version
+# 'v2', whose weights are published under the Prior Labs License (Apache 2.0 plus
+# an attribution clause) and download anonymously on first fit. The newer
+# checkpoints -- v2.5, v2.6, v3 -- are under per-version NON-COMMERCIAL and
+# non-production licenses and additionally require accepting that license against
+# a Prior Labs account, which upstream does interactively; opting into one with
+# `model_version` warns and names the license. See
+# qbiocode.learning.compute_tabpfn.TABPFN_DEFAULT_VERSION.
+#
+# The checkpoint is still downloaded on first fit, so a first run needs network
+# access. Point `model_path` at a local file to stay fully offline.
+#
+# `import qbiocode` and every other model keep working without this extra:
+# compute_tabpfn.py imports `tabpfn` lazily and raises an ImportError naming this
+# file when the model is actually selected. The lazy import is also load-bearing
+# for a second reason -- `import tabpfn` imports torch, which would defeat
+# qbiocode.utils._openmp's ordering guard. See tests/test_openmp_import_order.py.
+#
+# This list mirrors the `tabpfn` entry in pyproject.toml's
+# [project.optional-dependencies]; tests/test_requirements_consistency.py
+# asserts the two stay identical.
+# ==========================================================================
+
+tabpfn

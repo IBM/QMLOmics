@@ -293,7 +293,9 @@ class TestEstimatorsAreSeededAtDispatch:
         return raw[f"results_{model}"][0]
 
     # Every classical estimator in the dispatch table whose scikit-learn class takes
-    # a random_state. ``xgb`` is absent only because xgboost is an optional install.
+    # a random_state *and* is wrapped in OneVsOneClassifier, which is what puts the
+    # ``estimator__`` prefix on the recorded name. ``xgb`` is absent only because
+    # xgboost is an optional install.
     @pytest.mark.parametrize("model", ["dt", "lr", "rf", "svc"])
     def test_the_configured_seed_reaches_every_estimator_that_takes_one(self, model):
         params = self._results(model)["Model_Parameters"]
@@ -301,6 +303,26 @@ class TestEstimatorsAreSeededAtDispatch:
             f"{model} ran with random_state="
             f"{params['estimator__random_state']!r}, so its randomness does not "
             f"follow the configured seed"
+        )
+
+    # CatBoost is fitted directly rather than through OneVsOneClassifier -- it selects
+    # a multiclass loss on its own -- so its parameters are recorded unprefixed. The
+    # property being checked is identical; only the key differs, which is why this
+    # cannot simply join the list above.
+    #
+    # ``tabpfn`` is fitted directly too but is absent here: it needs the optional
+    # [tabpfn] extra and a downloaded checkpoint, so it cannot be assumed runnable.
+    # That its signature accepts ``random_state`` at all -- the property ``_seeded_kwargs``
+    # actually depends on -- is asserted in tests/test_catboost_tabpfn.py.
+    @pytest.mark.parametrize("model", ["catboost"])
+    def test_the_seed_reaches_an_unwrapped_estimator_too(self, model):
+        params = self._results(model, **{f"{model}_args": {"iterations": 10}})[
+            "Model_Parameters"
+        ]
+        assert params["random_state"] == self.ARGS["seed"], (
+            f"{model} ran with random_state={params.get('random_state')!r}, so its "
+            f"randomness does not follow the configured seed. CatBoost samples rows "
+            f"whenever a bootstrap is active, so this is not cosmetic."
         )
 
     def test_an_estimator_without_a_random_state_is_left_alone(self):

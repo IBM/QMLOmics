@@ -48,6 +48,24 @@ Apply QProfiler to a real single-cell RNA-seq benchmark: **CD4 vs CD8 T-cell** c
 - Correlate data-complexity measures with that gap
 - Use complexity context (Fisher ratio, mutual information, silhouette) to explain task difficulty
 
+#### QProfiler v2 - Tuned Learners and Three Complexity Blocks
+
+A second, wider pass over the same tool, built so the closing correlation is worth
+reading. Runs **all ten models** including CatBoost and TabPFN, tunes every classical one
+with **Optuna**, and profiles 3 datasets x 5 splits so each (model, embedding) group has
+15 observations rather than 6. The three datasets differ in exactly one geometric
+property - clusters per class - which is the axis the `task.` target-spectrum block
+measures.
+
+<a href="tutorials/QProfiler_v2/example_qprofiler_v2.html">📓 <strong>View Tutorial Notebook</strong></a>
+
+**What You'll Learn:**
+- Run CatBoost, TabPFN and XGBoost side by side under Optuna hyperparameter search
+- Read all three dataset-complexity blocks: hand-curated native, `mfe.` (pyMFE), and `task.` (target spectrum)
+- Use the `task.*_z` permutation controls to tell a genuinely structured target from a sparse geometry
+- Correlate ~140 complexity columns against performance, and subset them so the plot stays readable
+- Judge how much a rank correlation over 15 observations can actually support
+
 ---
 
 ### 3. QSage - Quantum-Inspired Feature Importance
@@ -273,6 +291,53 @@ If you encounter any issues or have questions about the tutorials:
 - Review the [Contributing Guide](https://github.com/qiskit-community/QBioCode/blob/main/CONTRIBUTING.md)
 - Consult the API documentation for detailed function references
 
+---
+
+### 8. Hyperparameter Tuning - Optuna vs Grid Search
+
+Learn how QBioCode tunes hyperparameters, and what changed when Optuna replaced the exhaustive grid as the default. This tutorial times the two searches against each other on the shipped configuration blocks, then tunes a quantum classifier.
+
+<a href="tutorials/Hyperparameter_Tuning/optuna_vs_gridsearch.html">📓 <strong>View Tutorial Notebook</strong></a>
+
+**What You'll Learn:**
+- Why the shipped `gridsearch_rf_args` block costs 2,880 fits at `cross_validation: 5`
+- Run the same configuration under `tuner: grid` and `tuner: optuna`, timed side by side
+- Write a hyperparameter as a continuous `{low, high, log}` range instead of a list of decades
+- Recognise the error you get when a range meets `tuner: grid`
+- Tune a quantum classifier (`qsvc`) with `tune_quantum: True`
+- Budget a quantum search: why `n_trials_quantum` defaults to 10, not 50
+
+**Key Concepts:**
+- TPE sampling against exhaustive enumeration: fixed budget versus fixed grid
+- Categorical choices and continuous ranges in one configuration block
+- Why quantum candidates are scored on one holdout rather than k folds
+- Reproducing a pre-Optuna result with `tuner: grid`
+- The hardware guard: why tuning on a real device is refused by default
+
+---
+
+### 9. CatBoost and TabPFN - Two New Classical Learners
+
+Run the two classical learners added alongside XGBoost, and see the three ways they differ from the scikit-learn estimators around them. CatBoost is a core dependency and works everywhere; TabPFN is a pretrained transformer behind an optional extra, and this tutorial degrades gracefully when its weights are unavailable rather than failing.
+
+<a href="tutorials/CatBoost_and_TabPFN/catboost_and_tabpfn.html">📓 <strong>View Tutorial Notebook</strong></a>
+
+**What You'll Learn:**
+- Run `catboost` beside `xgb` and `rf`, untuned and then tuned with Optuna
+- Why two boosters are worth running rather than picking one in advance
+- Recognise the one real trap in CatBoost's hyperparameter surface: `subsample` and `bagging_temperature` belong to incompatible bootstrap schemes
+- See why that conflict is reachable on *binary* data through `loss_function`, not only by adding classes
+- Measure a hyperparameter that silently does nothing (`min_data_in_leaf` at the default grow policy)
+- Understand what TabPFN actually needs to run: neither a GPU nor an API key
+- See why the pinned model version is a licensing decision, not just a modelling one: `v2`'s weights permit commercial use, `v2.5`/`v2.6`/`v3` are non-commercial
+
+**Key Concepts:**
+- Gradient boosting variants: symmetric trees and ordered boosting against XGBoost's level-wise growth
+- In-context learning: a frozen pretrained model whose `fit` only memorises rows, so no hyperparameter changes its capacity
+- Configuration validity that depends on a derived default rather than on what you wrote
+- Optional extras with a manual gate, and why such a model cannot be a base dependency
+- TabPFN's fixed ceilings: 10 classes (unwaivable), 50,000 rows, 2,000 features
+
 ```{toctree}
 :hidden:
 :maxdepth: 1
@@ -281,6 +346,7 @@ Artificial Data Generation <tutorials/Artificial_data_generation/example_data_ge
 Single-Cell Preprocessing & QC <tutorials/Preprocessing/sc-qc>
 QProfiler <tutorials/QProfiler/example_qprofiler>
 QProfiler on Single-Cell Data <tutorials/QProfiler/sc_binary_qprofiler>
+QProfiler v2 - Tuned Learners <tutorials/QProfiler_v2/example_qprofiler_v2>
 QuVINE - Getting Started <tutorials/QuVINE/example_quvine>
 QuVINE on Single-Cell Data <tutorials/QuVINE/quvine_sc_cd4_vs_cd8>
 QuVINE on T vs. Monocyte <tutorials/QuVINE/quvine_sc_t_vs_mono>
@@ -289,4 +355,6 @@ Quantum Ensemble Learning <tutorials/QEnsemble/QEnsemble_example_blobs>
 QSage <tutorials/QSage/qsage>
 Quantum Projection Learning <tutorials/Quantum_Projection_Learning/QPL_example>
 PQK on Ovarian Cancer <tutorials/PQK - OV>
+Hyperparameter Tuning: Optuna vs Grid Search <tutorials/Hyperparameter_Tuning/optuna_vs_gridsearch>
+CatBoost and TabPFN <tutorials/CatBoost_and_TabPFN/catboost_and_tabpfn>
 ```
