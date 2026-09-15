@@ -49,6 +49,7 @@ import nbformat
 #   example_quvine           ~7.5 min (offline)
 #   catboost_and_tabpfn      ~20 s   (needs the [tabpfn] extra and, on a machine with no
 #                                     cached checkpoint, network access to download it)
+#   example_qprofiler_v2     ~5 min  (needs the [tabpfn] extra; 300 tuned model fits)
 # Notebooks needing anndata/scanpy or a real quantum backend are deliberately
 # absent: they cannot run in a bare CI environment.
 NOTEBOOKS = [
@@ -63,6 +64,13 @@ NOTEBOOKS = [
     # runnable without the optional extra, and is skipped when that is absent. See
     # NOTEBOOKS_NEEDING_TABPFN below.
     "tutorial/CatBoost_and_TabPFN/catboost_and_tabpfn.ipynb",
+    # The widest QProfiler configuration the suite executes: all ten models under Optuna
+    # over 3 datasets x 5 splits x 2 embeddings. It is the end-to-end guard for the
+    # ModelResults.csv writer, because it is the only notebook that runs tuned classical
+    # models alongside an UNTUNED quantum one -- the combination that made the file
+    # ragged and unreadable (see tests/test_model_results_csv.py). It fits TabPFN, so it
+    # is listed in NOTEBOOKS_NEEDING_TABPFN below.
+    "tutorial/QProfiler_v2/example_qprofiler_v2.ipynb",
 ]
 
 #: Notebooks that fit TabPFN unconditionally, and so require the [tabpfn] extra.
@@ -73,7 +81,10 @@ NOTEBOOKS = [
 #: rather than skip. CI does not currently reach it -- the default `addopts` excludes `slow`
 #: -- so nothing would have caught this until someone ran the slow tier by hand.
 NOTEBOOKS_NEEDING_TABPFN = frozenset(
-    {"tutorial/CatBoost_and_TabPFN/catboost_and_tabpfn.ipynb"}
+    {
+        "tutorial/CatBoost_and_TabPFN/catboost_and_tabpfn.ipynb",
+        "tutorial/QProfiler_v2/example_qprofiler_v2.ipynb",
+    }
 )
 
 

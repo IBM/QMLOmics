@@ -48,6 +48,24 @@ Apply QProfiler to a real single-cell RNA-seq benchmark: **CD4 vs CD8 T-cell** c
 - Correlate data-complexity measures with that gap
 - Use complexity context (Fisher ratio, mutual information, silhouette) to explain task difficulty
 
+#### QProfiler v2 - Tuned Learners and Three Complexity Blocks
+
+A second, wider pass over the same tool, built so the closing correlation is worth
+reading. Runs **all ten models** including CatBoost and TabPFN, tunes every classical one
+with **Optuna**, and profiles 3 datasets x 5 splits so each (model, embedding) group has
+15 observations rather than 6. The three datasets differ in exactly one geometric
+property - clusters per class - which is the axis the `task.` target-spectrum block
+measures.
+
+<a href="tutorials/QProfiler_v2/example_qprofiler_v2.html">📓 <strong>View Tutorial Notebook</strong></a>
+
+**What You'll Learn:**
+- Run CatBoost, TabPFN and XGBoost side by side under Optuna hyperparameter search
+- Read all three dataset-complexity blocks: hand-curated native, `mfe.` (pyMFE), and `task.` (target spectrum)
+- Use the `task.*_z` permutation controls to tell a genuinely structured target from a sparse geometry
+- Correlate ~140 complexity columns against performance, and subset them so the plot stays readable
+- Judge how much a rank correlation over 15 observations can actually support
+
 ---
 
 ### 3. QSage - Quantum-Inspired Feature Importance
@@ -328,6 +346,7 @@ Artificial Data Generation <tutorials/Artificial_data_generation/example_data_ge
 Single-Cell Preprocessing & QC <tutorials/Preprocessing/sc-qc>
 QProfiler <tutorials/QProfiler/example_qprofiler>
 QProfiler on Single-Cell Data <tutorials/QProfiler/sc_binary_qprofiler>
+QProfiler v2 - Tuned Learners <tutorials/QProfiler_v2/example_qprofiler_v2>
 QuVINE - Getting Started <tutorials/QuVINE/example_quvine>
 QuVINE on Single-Cell Data <tutorials/QuVINE/quvine_sc_cd4_vs_cd8>
 QuVINE on T vs. Monocyte <tutorials/QuVINE/quvine_sc_t_vs_mono>
