@@ -39,7 +39,7 @@ from sklearn import svm
 import qbiocode.utils.qutils as qutils
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 from qbiocode.learning._tuning import (
     build_search_space,
     record_tuned_params,
@@ -53,7 +53,12 @@ def compute_pqk(
     y_train,
     y_test,
     args,
-    model="PQK",
+    # Lower case, matching the dispatch key. This default was "PQK", which was invisible
+    # while the body hardcoded its label -- but now that the label is honoured, a direct
+    # call with no model= would otherwise file results under a name no config can name.
+    # qc_winner_finder's quantum list was also written against the upper-case spelling
+    # while every real results table carries the lower-case one.
+    model="pqk",
     data_key="",
     verbose=False,
     encoding="Z",
@@ -441,23 +446,44 @@ def compute_pqk(
     projections_test = np.load(file_projection_test)
     projections_test = np.array(projections_test).reshape(len(projections_test), -1)
 
-    model = create_svc_model(args["seed"])
+    # `estimator`, not `model`. This assignment used to be `model = create_svc_model(...)`,
+    # which overwrote the `model` PARAMETER -- the label this function was told to file its
+    # results under -- with the fitted estimator object. The label was therefore gone
+    # before it could be used, and `method_pqk = "pqk"` on the next line was the
+    # workaround: a hardcoded label that ignored the argument. The visible consequence was
+    # that `compute_pqk_opt` passing model="pqk_opt" had no effect, so a TUNED PQK run
+    # produced `results_pqk` with model='pqk' -- byte-identical to an untuned one, leaving
+    # no way to tell from ModelResults.csv whether a search had run.
+    estimator = create_svc_model(args["seed"])
 
-    method_pqk = "pqk"
-    model.fit(projections_train, y_train)
-    y_predicted = model.predict(projections_test)
+    method_pqk = model
+    estimator.fit(projections_train, y_train)
+    y_predicted = estimator.predict(projections_test)
+    # `auc` is computed from these scores alone, never from y_predicted. The head is a
+    # RandomizedSearchCV over SVC, which delegates to `best_estimator_`; `probability`
+    # is not searched, so there is no predict_proba and extract_binary_scores falls
+    # through to decision_function. Scored on the *projections*, which is the space this
+    # estimator was fitted in -- the raw features would silently be the wrong width.
+    y_score = extract_binary_scores(estimator, projections_test)
 
     hyperparameters = {
         "feature_map": feature_map.__class__.__name__,
         "feature_map_reps": reps,
         "entanglement": entanglement,
-        "best_params": model.best_params_,
+        "best_params": estimator.best_params_,
         # Add other hyperparameters as needed
     }
     model_params = hyperparameters
 
     return modeleval(
-        y_test, y_predicted, beg_time, params=model_params, args=args, model=method_pqk, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        params=model_params,
+        args=args,
+        model=method_pqk,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -494,7 +520,11 @@ def compute_pqk_opt(
     y_test,
     args,
     verbose=False,
-    model="PQK",
+    # '_opt', so a DIRECT call is self-describing. model_run always passes
+    # model='pqk_opt' explicitly, but a caller using the default would otherwise
+    # produce a row labelled as untuned -- and modeleval infers `tuned` from this
+    # very string, so the label and the parameter column would BOTH be wrong.
+    model="pqk_opt",
     data_key="",
     encoding=None,
     primitive=None,

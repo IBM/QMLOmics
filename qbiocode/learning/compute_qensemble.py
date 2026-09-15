@@ -443,12 +443,22 @@ def compute_qensemble(X_train: np.ndarray, X_test: np.ndarray,
         if qc.num_qubits > 36:
             raise ValueError(f"Circuit has {qc.num_qubits} qubits, exceeds simulation limit of 36")
         
-        counts = execute_circuit(qc, n_shots=n_shots, device=device)
+        counts = execute_circuit(qc, n_shots=n_shots, device=device, seed=seed)
         probs = retrieve_probabilities(counts)
         predictions.append(probs)
     
     # Convert probabilities to class predictions
     y_predicted = np.array([1 if p[1] > p[0] else 0 for p in predictions])
+
+    # `auc` is computed from these scores alone, never from y_predicted. This is the one
+    # learner in the package with no fitted estimator to interrogate -- there is nothing
+    # for extract_binary_scores to be called on -- but it needs no help: the ensemble
+    # measures a probability per test sample directly, and `retrieve_probabilities`
+    # returns it as [p0, p1] normalised to sum to 1. p1 is the positive-class score, and
+    # it is the same quantity the argmax above throws away. Note that with few shots it
+    # takes only `n_shots + 1` distinct values, so the ranking is coarse; that is a
+    # property of the measurement, not of the metric.
+    y_score = np.array([p[1] for p in predictions], dtype=float)
     
     # Model parameters
     model_params = {
@@ -464,4 +474,4 @@ def compute_qensemble(X_train: np.ndarray, X_test: np.ndarray,
     }
     
     return modeleval(y_test, y_predicted, beg_time, model_params, args, 
-                    model=model, verbose=verbose)
+                    model=model, verbose=verbose, y_score=y_score)

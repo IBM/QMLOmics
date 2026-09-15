@@ -69,7 +69,7 @@ import numpy as np
 from sklearn.model_selection import GridSearchCV
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 from qbiocode.learning._grid import build_param_grid
 from qbiocode.learning._tuning import build_search_space, run_study
 
@@ -519,8 +519,19 @@ def compute_tabpfn(
     model_params = model_fit.get_params()
     # Validate the model in test dataset and calculate accuracy
     y_predicted = tabpfn.predict(X_test)
+    # `auc` is computed from these probabilities alone. TabPFN is fitted unwrapped and a
+    # probabilistic model by construction -- its forward pass returns a posterior -- so
+    # predict_proba costs nothing extra here beyond a second pass over the test rows.
+    y_score = extract_binary_scores(tabpfn, X_test)
     return modeleval(
-        y_test, y_predicted, beg_time, model_params, args, model=model, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        model_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -684,4 +695,19 @@ def compute_tabpfn_opt(
 
     # Make predictions and calculate accuracy
     y_predicted = best_tabpfn.predict(X_test)
-    return modeleval(y_test, y_predicted, beg_time, best_params, args, model=model, verbose=verbose)
+    # See compute_tabpfn: fitted unwrapped, so `auc` comes from predict_proba.
+    y_score = extract_binary_scores(best_tabpfn, X_test)
+    return modeleval(
+        y_test,
+        y_predicted,
+        beg_time,
+        best_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
+        # This function IS the tuned branch, so it states so rather than letting
+        # modeleval infer it from the label: a DIRECT call leaves `model` at its
+        # display-name default ('Decision Tree'), which carries no _opt marker.
+        tuned=True,
+    )

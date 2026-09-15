@@ -11,7 +11,7 @@ from qiskit_machine_learning.algorithms.classifiers import VQC
 import qbiocode.utils.qutils as qutils
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 from qbiocode.learning._tuning import (
     build_search_space,
     record_tuned_params,
@@ -26,7 +26,7 @@ def compute_vqc(
     y_test,
     args,
     verbose=False,
-    model="VQC",
+    model="vqc",
     data_key="",
     local_optimizer: Literal["COBYLA", "L_BFGS_B", "GradientDescent"] = "COBYLA",
     maxiter=100,
@@ -112,12 +112,25 @@ def compute_vqc(
     }
     model_params = hyperparameters
     y_predicted = vqc.predict(X_test)
+    # `auc` is computed from these scores alone, never from y_predicted. VQC inherits
+    # NeuralNetworkClassifier.predict_proba, which is the raw SamplerQNN forward pass --
+    # one column per class, already normalised over the measured bitstrings, so it is a
+    # genuine ranking rather than a re-reading of the argmax that produced y_predicted.
+    # Scored before the session is closed: the forward pass runs the circuit again.
+    y_score = extract_binary_scores(vqc, X_test)
 
     if not isinstance(session, type(None)):
         session.close()
 
     return modeleval(
-        y_test, y_predicted, beg_time, model_params, args, model=model, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        model_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -128,7 +141,11 @@ def compute_vqc_opt(
     y_test,
     args,
     verbose=False,
-    model="VQC",
+    # '_opt', so a DIRECT call is self-describing. model_run always passes
+    # model='vqc_opt' explicitly, but a caller using the default would otherwise
+    # produce a row labelled as untuned -- and modeleval infers `tuned` from this
+    # very string, so the label and the parameter column would BOTH be wrong.
+    model="vqc_opt",
     data_key="",
     local_optimizer=None,
     maxiter=None,

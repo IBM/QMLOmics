@@ -15,6 +15,13 @@ from catboost import CatBoostRegressor
 import optuna
 import dill as pickle
 
+# The complexity-column schema is owned by the evaluation layer, which produces it --
+# not by this app, which only consumes it. qbiocode.visualization also consumes it.
+from qbiocode.evaluation.dataset_evaluation import (
+    SAMPLE_COUNT_COLUMN,
+    detect_complexity_schema,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,14 +46,16 @@ class QuantumSage():
         This function initializes the Sage with the input data frame that contains the data characteristics and performance metrics
         '''
 
-        self._columns_data_features = [ '# Features', '# Samples',
-                                        'Feature_Samples_ratio', 'Intrinsic_Dimension', 'Condition number',
-                                        'Fisher Discriminant Ratio', 'Total Correlations', 'Mutual information',
-                                        '# Non-zero entries', '# Low variance features', 'Variation', 'std_var',
-                                        'Coefficient of Variation %', 'std_co_of_v', 'Skewness', 'std_skew',
-                                        'Kurtosis', 'std_kurt', 'Mean Log Kernel Density',
-                                        'Isomap Reconstruction Error', 'Fractal dimension', 'Entropy',
-                                        'std_entropy']
+        # Detected rather than hardcoded: the complexity block QProfiler writes is
+        # now pyMFE-backed, but the committed benchmark table predates that and
+        # cannot be regenerated from this repository. Reading whichever schema the
+        # caller supplies keeps both trainable -- see detect_complexity_schema.
+        # The FRAME, not `data_input.columns`: only the rows reveal a table that
+        # concatenates both schemas, and reading such a table as 'pymfe' trains the
+        # sub-sages on a block of zeros. See detect_complexity_schema's Note.
+        self._complexity_schema, self._columns_data_features = detect_complexity_schema(
+            data_input
+        )
         self._columns_metrics = ['accuracy', 'f1_score', 'auc']
         # The column recording how each model was parameterized is named for the
         # branch that produced it: model_evaluation.py writes 'BestParams_Tuned'
@@ -1091,9 +1100,42 @@ class QuantumSage():
 
 
 def calculate_SLGH(df, train_pct = 0.7):
+    """Append the derived SLGH (Scaled Latent Geometric Hardness) feature.
+
+    ``SLGH = -log(intrinsic_dim) - log(1 + FDR * n_train)``.
+
+    Both ``Intrinsic_Dimension`` and ``Fisher Discriminant Ratio`` are computed
+    natively by :mod:`qbiocode.evaluation.dataset_evaluation` in *both* schemas, so
+    the formula is unchanged by the pyMFE integration. Only the sample count moved
+    (``# Samples`` -> ``mfe.nr_inst``), which is why the column is looked up rather
+    than named.
+
+    Note that ``Fisher Discriminant Ratio`` is deliberately not replaced by pyMFE's
+    ``mfe.f1.mean``: pyMFE's F1 is univariate and inverted (larger means *harder*),
+    so substituting it would flip the sign of the second term. See the
+    ``dataset_evaluation`` module docstring.
+
+    Args:
+        df (pd.DataFrame): Dataset-complexity features, one row per dataset.
+        train_pct (float): Fraction of samples used for training, for ``n_train``.
+
+    Returns:
+        pd.DataFrame: A copy of ``df`` with the ``SLGH`` column appended.
+
+    Raises:
+        ValueError: If the sample-count column is absent in either schema.
+    """
     id_col = 'Intrinsic_Dimension'
     fdr_col = 'Fisher Discriminant Ratio'
-    num_samples = '# Samples'
+    num_samples = next(
+        (name for name in SAMPLE_COUNT_COLUMN.values() if name in df.columns), None
+    )
+    if num_samples is None:
+        raise ValueError(
+            "Cannot derive SLGH: no sample-count column found. Expected one of "
+            f"{sorted(SAMPLE_COUNT_COLUMN.values())}. Pass the complexity feature "
+            "columns of a QProfiler results table."
+        )
     n_train = np.ceil(df[num_samples] * train_pct)
     eps = 1e-8
 
@@ -1114,7 +1156,8 @@ def main():
         qsage --input data.csv --output results/ [options]
     
     The input CSV should contain:
-        - Dataset complexity features (# Features, # Samples, Intrinsic_Dimension, etc.)
+        - Dataset complexity features (Intrinsic_Dimension, Fisher Discriminant Ratio,
+          and the mfe.* pyMFE block; a legacy-schema table is also accepted)
         - Performance metrics (accuracy, f1_score, auc)
         - Metadata (Dataset, embeddings, model, etc.)
     

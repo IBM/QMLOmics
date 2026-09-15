@@ -163,7 +163,7 @@ qprofiler.main(config)
 
 QProfiler provides a comprehensive benchmarking pipeline that:
 - Evaluates both classical and quantum ML models
-- Computes 15+ data complexity metrics
+- Computes 125 data complexity metrics (pyMFE + QBioCode-native)
 - Correlates model performance with data characteristics
 - Generates detailed performance reports and visualizations
 

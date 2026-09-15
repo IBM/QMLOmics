@@ -51,6 +51,7 @@ that is most of it.
 """
 
 import importlib
+import ast
 import inspect
 import os
 import subprocess
@@ -851,12 +852,44 @@ class TestTheQplHeads:
     def test_the_qpl_head_report_tolerates_an_unsearched_head(self):
         """The ``best_params`` fallback must be a real fallback, not a crash.
 
-        Guards the exact line: a bare estimator has no ``best_params_``, and reading it
-        unguarded raised AttributeError only for the TabPFN head -- after the expensive
-        quantum projection had already been computed.
+        A bare estimator has no ``best_params_``, and reading it unguarded raised
+        AttributeError for the TabPFN head alone -- after the expensive quantum projection
+        had already been computed.
+
+        Asserted on the AST rather than on a source substring. The substring version named
+        the variable (``getattr(model, ...)``) and so broke the moment that variable was
+        renamed: ``compute_qpl`` used to rebind ``model`` -- its label parameter -- to each
+        head's estimator, destroying the label, which is why a tuned QPL run was
+        indistinguishable from an untuned one. Fixing that renamed the estimator to
+        ``estimator`` and this test failed, having pinned the spelling instead of the
+        behaviour. What matters is that the attribute is reached through a defaulting
+        ``getattr`` with a fallback, whatever the variable is called.
         """
-        source = inspect.getsource(sys.modules["qbiocode.learning.compute_qpl"])
-        assert 'getattr(model, "best_params_", None) or model.get_params()' in source
+        module = sys.modules["qbiocode.learning.compute_qpl"]
+        tree = ast.parse(inspect.getsource(module))
+        guarded = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) == 3
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "best_params_"
+        ]
+        assert guarded, (
+            "compute_qpl no longer reads best_params_ through a 3-argument getattr, so an "
+            "estimator without one (the TabPFN head) would raise AttributeError after the "
+            "projection had been computed"
+        )
+        # And the fallback must actually be used, not discarded: the getattr sits on the
+        # left of a `or`, whose right side supplies the unsearched head's own parameters.
+        assert any(
+            isinstance(parent, ast.BoolOp) and isinstance(parent.op, ast.Or)
+            and any(value is call for value in parent.values)
+            for call in guarded
+            for parent in ast.walk(tree)
+            if isinstance(parent, ast.BoolOp)
+        ), "the getattr default is not feeding an `or` fallback"
 
     @pytest.mark.parametrize("head", ["catboost", "tabpfn"])
     def test_an_unavailable_head_is_dropped_rather_than_fatal(self, head):

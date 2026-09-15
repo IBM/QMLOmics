@@ -53,7 +53,7 @@ from sklearn.model_selection import GridSearchCV
 import qbiocode.utils.qutils as qutils
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 from qbiocode.learning._tuning import (
     build_search_space,
     record_tuned_params,
@@ -78,7 +78,7 @@ def compute_qpl(
     y_train,
     y_test,
     args,
-    model="QPL",
+    model="qpl",
     data_key="",
     verbose=False,
     encoding="Z",
@@ -374,22 +374,26 @@ def compute_qpl(
             "from: 'rf', 'mlp', 'svc', 'lr', 'xgb', 'catboost', 'tabpfn'"
         )
 
+    # `estimator`, not `model`, inside this loop. It used to rebind `model` -- the label
+    # parameter -- to each head's estimator, so the label was destroyed on the first
+    # iteration. That is why the results label below was hardcoded to "qpl_" + head:
+    # there was nothing left to read it from. Same shadowing bug as compute_pqk had.
     model_res = []
     for method in classical_models:
         if method == "rf":
-            model = create_rf_model(args["seed"])
+            estimator = create_rf_model(args["seed"])
         elif method == "svc":
-            model = create_svc_model(args["seed"])
+            estimator = create_svc_model(args["seed"])
         elif method == "mlp":
-            model = create_mlp_model(args["seed"])
+            estimator = create_mlp_model(args["seed"])
         elif method == "lr":
-            model = create_lr_model(args["seed"])
+            estimator = create_lr_model(args["seed"])
         elif method == "xgb":
-            model = create_xgb_model(args["seed"])
+            estimator = create_xgb_model(args["seed"])
         elif method == "catboost":
-            model = create_catboost_model(args["seed"])
+            estimator = create_catboost_model(args["seed"])
         elif method == "tabpfn":
-            model = create_tabpfn_model(args["seed"])
+            estimator = create_tabpfn_model(args["seed"])
         else:
             warnings.warn(
                 f"Unknown model type '{method}' skipped. Valid options: 'rf', 'mlp', "
@@ -398,11 +402,26 @@ def compute_qpl(
             )
             continue
 
-        method_qpl = "qpl_" + method
+        # Built from the `model` label rather than hardcoded to "qpl_". The hardcoded
+        # form threw away the argument, so `compute_qpl_opt` passing model="qpl_opt" had
+        # no effect and a TUNED run produced exactly the columns an untuned one did --
+        # `results_qpl_<head>` with model='qpl_<head>' -- so ModelResults.csv could not
+        # say whether a search had run. The head name stays the suffix (a QPL run fans
+        # out to one column per classical head), so a tuned run reads 'qpl_opt_<head>'.
+        method_qpl = f"{model}_{method}"
         print(method_qpl)
         try:
-            model.fit(projections_train, y_train)
-            y_predicted = model.predict(projections_test)
+            estimator.fit(projections_train, y_train)
+            y_predicted = estimator.predict(projections_test)
+            # `auc` is computed from these scores alone, never from y_predicted. Every
+            # head here is fitted unwrapped, so predict_proba is reachable: the six
+            # searched heads are RandomizedSearchCV objects that delegate to
+            # `best_estimator_`, and the bare TabPFN head answers directly. The one
+            # exception is the SVC head -- `probability` is not in its grid, so
+            # extract_binary_scores falls through to decision_function, which ranks
+            # just as well. Scored on the *projections*: that is the space these heads
+            # were fitted in, and the raw features would be the wrong width.
+            y_score = extract_binary_scores(estimator, projections_test)
         except Exception as error:  # noqa: BLE001 -- narrowed immediately below
             # Only a weights-unavailable failure is survivable here, and only TabPFN can
             # raise one: its checkpoint sits behind a license acceptance that cannot be
@@ -427,14 +446,24 @@ def compute_qpl(
             # Every other head is a RandomizedSearchCV and carries best_params_.
             # TabPFN is fitted bare -- see create_tabpfn_model for why -- so there is
             # no search result to report and its own settings are the honest answer.
-            "best_params": getattr(model, "best_params_", None) or model.get_params(),
+            "best_params": getattr(estimator, "best_params_", None) or estimator.get_params(),
             # Add other hyperparameters as needed
         }
         model_params = hyperparameters
 
         model_res.append(
             modeleval(
-                y_test, y_predicted, beg_time, model_params, args, model=method_qpl, verbose=verbose
+                y_test,
+                y_predicted,
+                beg_time,
+                model_params,
+                args,
+                model=method_qpl,
+                # Explicit because the label is 'qpl_opt_<head>': the marker is not a
+                # suffix, so modeleval's endswith("_opt") inference cannot see it.
+                tuned=str(model).endswith("_opt"),
+                verbose=verbose,
+                y_score=y_score,
             )
         )
 
@@ -674,7 +703,11 @@ def compute_qpl_opt(
     y_test,
     args,
     verbose=False,
-    model="QPL",
+    # '_opt', so a DIRECT call is self-describing. model_run always passes
+    # model='qpl_opt' explicitly, but a caller using the default would otherwise
+    # produce a row labelled as untuned -- and modeleval infers `tuned` from this
+    # very string, so the label and the parameter column would BOTH be wrong.
+    model="qpl_opt",
     data_key="",
     encoding=None,
     primitive=None,

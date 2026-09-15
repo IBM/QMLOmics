@@ -86,7 +86,7 @@ except Exception as exc:  # noqa: BLE001 -- see above
 from sklearn.model_selection import GridSearchCV
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 from qbiocode.learning._grid import build_param_grid
 from qbiocode.learning._tuning import build_search_space, run_study
 
@@ -362,8 +362,21 @@ def compute_catboost(
     # shape every other learner puts there, instead of resting on that squeezing, which
     # is not a documented guarantee.
     y_predicted = y_predicted.ravel()
+    # `auc` is computed from these probabilities alone. CatBoost is fitted unwrapped, so
+    # predict_proba is available -- unlike the seven OneVsOneClassifier-wrapped learners,
+    # where the absence of it is what made the old label-based `auc` look unavoidable.
+    # Under the MultiClass loss on a two-class target predict_proba still returns two
+    # columns, so this route survives the same loss_function corner as the ravel above.
+    y_score = extract_binary_scores(catboost, X_test)
     return modeleval(
-        y_test, y_predicted, beg_time, model_params, args, model=model, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        model_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -548,4 +561,19 @@ def compute_catboost_opt(
 
     # Make predictions and calculate accuracy
     y_predicted = best_catboost.predict(X_test).ravel()
-    return modeleval(y_test, y_predicted, beg_time, best_params, args, model=model, verbose=verbose)
+    # See compute_catboost: fitted unwrapped, so `auc` comes from predict_proba.
+    y_score = extract_binary_scores(best_catboost, X_test)
+    return modeleval(
+        y_test,
+        y_predicted,
+        beg_time,
+        best_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
+        # This function IS the tuned branch, so it states so rather than letting
+        # modeleval infer it from the label: a DIRECT call leaves `model` at its
+        # display-name default ('Decision Tree'), which carries no _opt marker.
+        tuned=True,
+    )

@@ -17,7 +17,7 @@ from sklearn.model_selection import GridSearchCV
 import qbiocode.utils.qutils as qutils
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 from qbiocode.learning._tuning import (
     build_search_space,
     record_tuned_params,
@@ -37,7 +37,7 @@ def compute_qsvc(
     y_train,
     y_test,
     args,
-    model="QSVC",
+    model="qsvc",
     data_key="",
     C=1,
     gamma="scale",
@@ -117,12 +117,25 @@ def compute_qsvc(
     }
     model_params = hyperparameters
     y_predicted = qsvc.predict(X_test)
+    # `auc` is computed from these scores alone, never from y_predicted. Both kernel
+    # classifiers offer a ranking: QSVC subclasses sklearn's SVC and inherits its
+    # decision_function, and PegasosQSVC publishes predict_proba (a sigmoid of its own
+    # decision_function, so the same ordering). Scored before the session is closed --
+    # on hardware the primitive is what evaluates the kernel entries this needs.
+    y_score = extract_binary_scores(qsvc, X_test)
 
     if not isinstance(session, type(None)):
         session.close()
 
     return modeleval(
-        y_test, y_predicted, beg_time, model_params, args, model=model, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        model_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -133,7 +146,11 @@ def compute_qsvc_opt(
     y_test,
     args,
     verbose=False,
-    model="QSVC",
+    # '_opt', so a DIRECT call is self-describing. model_run always passes
+    # model='qsvc_opt' explicitly, but a caller using the default would otherwise
+    # produce a row labelled as untuned -- and modeleval infers `tuned` from this
+    # very string, so the label and the parameter column would BOTH be wrong.
+    model="qsvc_opt",
     data_key="",
     C=None,
     gamma=None,

@@ -9,7 +9,7 @@ from sklearn.tree import DecisionTreeClassifier
 # ====== Additional local imports ======
 from qbiocode.learning._grid import build_param_grid
 from qbiocode.learning._tuning import build_search_space, run_study
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 
 # ====== Scikit-learn imports ======
 
@@ -96,8 +96,21 @@ def compute_dt(
     model_params = model_fit.get_params()
     # Validate the model in test dataset and calculate accuracy
     y_predicted = dt.predict(X_test)
+    # `auc` is a ranking metric and is computed from these scores alone -- passing
+    # y_predicted, as this used to, silently reported balanced accuracy instead.
+    # OneVsOneClassifier publishes no predict_proba, so what comes back here is its
+    # decision_function; see extract_binary_scores for why that is a real ranking on a
+    # binary target, and None (recorded as NaN) when it is not.
+    y_score = extract_binary_scores(dt, X_test)
     return modeleval(
-        y_test, y_predicted, beg_time, model_params, args, model=model, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        model_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -198,4 +211,20 @@ def compute_dt_opt(
 
     # Make predictions and calculate accuracy
     y_predicted = best_dt.predict(X_test)
-    return modeleval(y_test, y_predicted, beg_time, best_params, args, model=model, verbose=verbose)
+    # Fitted unwrapped, so predict_proba is available. `auc` is computed from these
+    # scores alone; see extract_binary_scores.
+    y_score = extract_binary_scores(best_dt, X_test)
+    return modeleval(
+        y_test,
+        y_predicted,
+        beg_time,
+        best_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
+        # This function IS the tuned branch, so it states so rather than letting
+        # modeleval infer it from the label: a DIRECT call leaves `model` at its
+        # display-name default ('Decision Tree'), which carries no _opt marker.
+        tuned=True,
+    )

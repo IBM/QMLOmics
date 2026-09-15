@@ -37,6 +37,9 @@ from .conftest import (
 )
 
 EMBEDDINGS = ["pca", "none"]
+#: The feature count is reported by pyMFE now that QProfiler's complexity block is
+#: pyMFE-backed; it was "# Features" before. See qbiocode/evaluation/mfe_features.py.
+N_FEATURES_COLUMN = "mfe.nr_attr"
 MODELS = ["lr", "dt"]
 N_ITER = 2
 N_COMPONENTS = 2
@@ -82,8 +85,8 @@ class TestTheResultsFile:
 
     def test_the_embedding_actually_reduced_the_features(self, run_seed7):
         """``n_components`` must reach the embedding, not just the config file."""
-        reduced = run_seed7[run_seed7["embeddings"] == "pca"]["# Features"].unique()
-        unreduced = run_seed7[run_seed7["embeddings"] == "none"]["# Features"].unique()
+        reduced = run_seed7[run_seed7["embeddings"] == "pca"][N_FEATURES_COLUMN].unique()
+        unreduced = run_seed7[run_seed7["embeddings"] == "none"][N_FEATURES_COLUMN].unique()
         assert list(reduced) == [N_COMPONENTS]
         assert list(unreduced) == [N_FEATURES]
 
@@ -145,4 +148,4 @@ class TestTheRawDataEvaluation:
         assert raw_files, "no RawDataEvaluation.csv was written"
         raw = pd.read_csv(raw_files[0])
         assert len(raw) == 1
-        assert raw["# Features"].iloc[0] == N_FEATURES
+        assert raw[N_FEATURES_COLUMN].iloc[0] == N_FEATURES

@@ -14,7 +14,7 @@ from qiskit_machine_learning.neural_networks import EstimatorQNN, SamplerQNN
 import qbiocode.utils.qutils as qutils
 
 # ====== Additional local imports ======
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 from qbiocode.learning._tuning import (
     build_search_space,
     record_tuned_params,
@@ -28,7 +28,7 @@ def compute_qnn(
     y_train,
     y_test,
     args,
-    model="QNN",
+    model="qnn",
     data_key="",
     primitive: Literal["estimator", "sampler"] = "sampler",
     verbose=False,
@@ -161,12 +161,29 @@ def compute_qnn(
     }
     model_params = hyperparameters
     y_predicted = qnn.predict(X_test)
+    # `auc` is computed from these scores alone, never from y_predicted.
+    # NeuralNetworkClassifier.predict_proba returns the network's forward pass, and its
+    # shape depends on which primitive was chosen above -- both are rankings, and
+    # extract_binary_scores handles each:
+    #   * sampler (the default): SamplerQNN with `interpret=parity` and
+    #     `output_shape=2`, so (n, 2) probabilities over the two parity outcomes;
+    #   * estimator: EstimatorQNN, so a single (n, 1) expectation value in [-1, +1] --
+    #     not a probability, but exactly the quantity `predict` takes the sign of.
+    # Scored before the session is closed: the forward pass runs the circuit again.
+    y_score = extract_binary_scores(qnn, X_test)
 
     if not isinstance(session, type(None)):
         session.close()
 
     return modeleval(
-        y_test, y_predicted, beg_time, model_params, args, model=model, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        model_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -177,7 +194,11 @@ def compute_qnn_opt(
     y_test,
     args,
     verbose=False,
-    model="QNN",
+    # '_opt', so a DIRECT call is self-describing. model_run always passes
+    # model='qnn_opt' explicitly, but a caller using the default would otherwise
+    # produce a row labelled as untuned -- and modeleval infers `tuned` from this
+    # very string, so the label and the parameter column would BOTH be wrong.
+    model="qnn_opt",
     data_key="",
     primitive=None,
     local_optimizer=None,

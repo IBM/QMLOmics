@@ -38,6 +38,10 @@ networkx
 numpy
 optuna
 pandas
+# pyMFE supplies the dataset-complexity meta-features used by
+# qbiocode.evaluation.evaluate (see qbiocode/evaluation/mfe_features.py).
+# It pulls in `gower`; every other dependency of it is already declared here.
+pymfe
 pyyaml
 qiskit==2.2.0
 qiskit-aer==0.17.0

@@ -40,13 +40,26 @@ def _call_with_global_seeds(compute_fn, seed, q_seed, *fn_args, **fn_kwargs):
     if seed is not None:
         np.random.seed(seed)
     if q_seed is not None:
-        try:
-            from qiskit_algorithms.utils import algorithm_globals
-        except ImportError:
-            # Classical-only install: nothing in this worker reads the quantum
-            # global seed, so there is nothing to set.
-            pass
-        else:
+        # TWO distinct singletons, not one. qiskit-machine-learning 0.9 ships its own
+        # `algorithm_globals` (qiskit_machine_learning.utils) alongside the
+        # qiskit-algorithms one, and they are separate objects with separate state --
+        # setting `random_seed` on the qiskit-algorithms singleton leaves the
+        # qiskit-machine-learning one at None. VQC and QNN draw their initial point
+        # through `TrainableModel`, which reads the qiskit-machine-learning one, so
+        # seeding only the first left both models starting from OS entropy: two runs
+        # at the same `q_seed` disagreed, and nothing said why. Seed both.
+        for module_path in (
+            "qiskit_algorithms.utils",
+            "qiskit_machine_learning.utils",
+        ):
+            try:
+                module = __import__(module_path, fromlist=["algorithm_globals"])
+                algorithm_globals = module.algorithm_globals
+            except (ImportError, AttributeError):
+                # Classical-only install, or a version that does not ship this
+                # singleton: nothing in this worker reads it, so there is nothing
+                # to set.
+                continue
             algorithm_globals.random_seed = q_seed
     return compute_fn(*fn_args, **fn_kwargs)
 
@@ -79,9 +92,39 @@ def model_run(X_train, X_test, y_train, y_test, data_key, args):
             - <model>_args: Additional arguments for each model.
 
     Returns:
-        model_total_result (dict): A dictionary containing the results of the models run, with keys as model names and values as their respective results.
-        This dictionary can readily be converted to a Pandas Dataframe, as seen in the 'ModelResults.csv' files that are produced in the results directory
-        when the main profiler is run (qbiocode-profiler.py).
+        model_total_result (dict): The results of every model run, ready to be turned
+        into a Pandas DataFrame -- that is how the 'ModelResults.csv' files in the
+        results directory are written when the main profiler runs
+        (qbiocode-profiler.py).
+
+        The keys are NOT the model names. Each model contributes three of them, each
+        prefixed, where <label> is the name from args['model'] with '_opt' appended
+        when that model was tuned:
+
+            'results_<label>'      the metrics row
+            'y_test_<label>'       the true labels it was scored against
+            'y_predicted_<label>'  the labels it predicted
+
+        So args['model'] = ['dt'] yields 'results_dt', not 'dt', and turning
+        grid_search on yields 'results_dt_opt'. Every value is a one-entry dict keyed
+        by the integer 0, because the frame is pivoted onto a single row index before
+        to_dict() -- read a metrics row as result['results_dt'][0], not
+        result['results_dt'].
+
+        That row holds 'model', 'accuracy', 'f1_score', 'time', 'auc' and one
+        parameter key: 'Model_Parameters' when the model ran at its configured
+        hyperparameters, 'BestParams_Tuned' when it was tuned. See
+        qbiocode.evaluation.model_evaluation.modeleval, which builds it -- in
+        particular for 'auc', which is a ranking ROC AUC and NaN where no score
+        exists.
+
+    Raises:
+        ValueError: If args['model'] is empty, names a model that is not in the
+            dispatch table, or names one twice; if grid_search is on for a model with
+            no '_opt' twin; if tune_quantum is on without grid_search, or without a
+            gridsearch_<model>_args block per quantum model; or if args['tuner'] is
+            not one of 'optuna' or 'grid'. All of these are raised before any model is
+            fitted.
 
     """
 
@@ -162,6 +205,20 @@ def model_run(X_train, X_test, y_train, y_test, data_key, args):
             f"{sorted(compute_ml_dict)} (quantum: {sorted(quantum_models)}). "
             f"Note the '_opt' variants are selected with args['grid_search'], not "
             f"by naming them here."
+        )
+    # A repeated name is rejected here rather than at the end. Two entries write the
+    # same three columns ('results_<model>', 'y_test_<model>', 'y_predicted_<model>'),
+    # so the `pd.melt(...).pivot(...)` fold-up at the bottom of this function had two
+    # values for one index and died with "Index contains duplicate entries, cannot
+    # reshape" -- AFTER every fit had run, naming neither the model nor args['model'].
+    # There is no arrangement of the results in which a repeated name means anything,
+    # so the config is simply wrong and can say so immediately.
+    duplicated = sorted({name for name in requested if requested.count(name) > 1})
+    if duplicated:
+        raise ValueError(
+            f"Duplicate model(s) {duplicated} in args['model']; each model may be "
+            f"named at most once. Every model writes one 'results_<model>' column, so "
+            f"a repeat has nowhere to put its second result. Requested: {requested}."
         )
     if grid_search_requested := bool(args.get("grid_search", False)):
         missing_opt = [

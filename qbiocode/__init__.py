@@ -85,12 +85,19 @@ from .learning.compute_catboost import compute_catboost, compute_catboost_opt
 from .learning.compute_lr import compute_lr, compute_lr_opt
 from .learning.compute_mlp import compute_mlp, compute_mlp_opt
 from .learning.compute_nb import compute_nb, compute_nb_opt
-from .learning.compute_pqk import compute_pqk
-from .learning.compute_qnn import compute_qnn
-from .learning.compute_qsvc import compute_qsvc
+# Both twins of every quantum learner, matching the classical ones. The `_opt`
+# variants and compute_qpl are all reachable through `model_run`'s dispatch table, so
+# leaving them off the package root made 6 of the 28 dispatchable functions importable
+# only by their private module path -- an inconsistency rather than a decision, since
+# every classical learner exports both twins. Guarded by
+# tests/test_model_contract_matrix.py.
+from .learning.compute_pqk import compute_pqk, compute_pqk_opt
+from .learning.compute_qnn import compute_qnn, compute_qnn_opt
+from .learning.compute_qpl import compute_qpl, compute_qpl_opt
+from .learning.compute_qsvc import compute_qsvc, compute_qsvc_opt
 from .learning.compute_rf import compute_rf, compute_rf_opt
 from .learning.compute_svc import compute_svc, compute_svc_opt
-from .learning.compute_vqc import compute_vqc
+from .learning.compute_vqc import compute_vqc, compute_vqc_opt
 
 # compute_xgb.py guards the xgboost import itself and both functions raise an
 # actionable ImportError -- naming libomp and the exact reinstall command -- when
@@ -149,9 +156,15 @@ __all__ = [
     "compute_mlp_opt",
     # Quantum ML algorithms
     "compute_qnn",
+    "compute_qnn_opt",
     "compute_qsvc",
+    "compute_qsvc_opt",
     "compute_vqc",
+    "compute_vqc_opt",
     "compute_pqk",
+    "compute_pqk_opt",
+    "compute_qpl",
+    "compute_qpl_opt",
     # Embeddings
     "get_embeddings",
     "is_transductive",

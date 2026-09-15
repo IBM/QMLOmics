@@ -13,7 +13,7 @@ QProfiler is a comprehensive tool that goes beyond simple model evaluation. It p
 
 📊 **What QProfiler Does**
    1. **Runs Multiple Models**: Evaluates classical (RF, SVM, LR, XGBoost, CatBoost, TabPFN, etc.) and quantum (QSVC, PQK, VQC) algorithms
-   2. **Analyzes Data Complexity**: Computes 15+ complexity measures before model training
+   2. **Analyzes Data Complexity**: Computes 125 complexity measures before model training
    3. **Correlates Results**: Links model performance to data characteristics
    4. **Automates Workflows**: Handles data splitting, scaling, encoding, and evaluation
 
@@ -183,6 +183,74 @@ In data mining and machine learning, we can distinguish between two fundamental 
 
 QProfiler automatically computes the following complexity measures for each dataset to characterize its intrinsic properties and predict model performance.
 
+.. admonition:: Where these numbers come from
+   :class: note
+
+   Most of the measures below are extracted with `pyMFE
+   <https://github.com/ealcobaca/pymfe>`_ and appear in the output with an ``mfe.``
+   prefix (``mfe.var.mean``, ``mfe.f1.mean``, ...). The rest are computed directly by
+   :mod:`qbiocode.evaluation.dataset_evaluation` because pyMFE has no equivalent:
+   intrinsic dimension, condition number, Fisher discriminant ratio, coefficient of
+   variation, low-variance feature count, non-zero entry count, mean log kernel
+   density, Isomap reconstruction error and fractal dimension.
+
+   QBioCode uses a **curated subset** of pyMFE's ~105 meta-features, not all of them.
+   A large fraction are unusable on the data QProfiler profiles -- all-numeric,
+   binary-labelled, and frequently with far more features than samples -- either
+   because they are undefined (and pyMFE reports that as a silent ``NaN``), because
+   they collapse to a constant, or because they are quadratic in the feature count and
+   so intractable on an omics matrix. Every exclusion is recorded with its measured
+   reason in :mod:`qbiocode.evaluation.mfe_features`, and
+   ``tests/test_dataset_evaluation.py`` keeps them excluded.
+
+Classification Complexity (Lorena et al. 2019)
+----------------------------------------------
+
+The F, L, N, T and C families measure how hard the classes are to separate, rather
+than how the data is distributed. ``mfe.f1``--``mfe.f4`` measure feature overlap
+between classes; ``mfe.l1``--``mfe.l3`` measure how far the problem is from linearly
+separable; ``mfe.n1``--``mfe.n4``, ``mfe.lsc``, ``mfe.density``, ``mfe.cls_coef`` and
+``mfe.hubs`` describe the neighbourhood and adjacency-graph structure around the class
+boundary; ``mfe.t3``/``mfe.t4`` are PCA-based dimensionality ratios; ``mfe.c2`` is the
+class-imbalance ratio.
+
+.. note::
+
+   The L family, ``mfe.f2`` and ``mfe.f4`` are informative when :math:`p < n` but
+   degenerate when :math:`p \ge n`: a dataset with more features than samples is
+   almost always linearly separable, so L1, L2, L3 and F4 all go to zero regardless of
+   how hard the problem really is. They are most useful on the *embedded* data, where
+   the dimension is small. Read them alongside ``mfe.attr_to_inst``.
+
+*Reference:* Lorena, A. C., et al. (2019). "How Complex is your classification
+problem? A survey on measuring classification complexity." *ACM Computing Surveys*,
+52(5), 1-34.
+
+Landmarking
+-----------
+
+The accuracy of deliberately cheap learners on the dataset itself -- a 1-nearest
+neighbour (``mfe.one_nn``), naive Bayes (``mfe.naive_bayes``), linear discriminant
+analysis (``mfe.linear_discr``), single decision-tree nodes (``mfe.best_node``,
+``mfe.worst_node``) and a 1-NN restricted to the most informative features
+(``mfe.elite_nn``). These are the most directly useful features for
+:doc:`QSage <sage>`: rather than describing the data and hoping the description
+predicts model performance, a landmark *is* a cheap measurement of model performance.
+
+*Reference:* Pfahringer, B., Bensusan, H., & Giraud-Carrier, C. (2000). "Meta-learning
+by landmarking various learning algorithms." *ICML*, 743-750.
+
+Model-Based, Clustering and Concept Measures
+--------------------------------------------
+
+``mfe.leaves``, ``mfe.nodes``, ``mfe.tree_depth`` and their relatives describe the
+shape of a decision tree induced on the data -- a deeper, bushier tree implies a more
+convoluted decision boundary. ``mfe.sil``, ``mfe.ch``, ``mfe.vdb``, ``mfe.vdu``,
+``mfe.int`` and ``mfe.pb`` are cluster-validity indices measuring how well the class
+labels line up with the data's own geometry. ``mfe.conceptvar``, ``mfe.wg_dist``,
+``mfe.impconceptvar`` and ``mfe.cohesiveness`` measure how variable the labels are
+among near neighbours.
+
 Dimensionality Metrics
 ----------------------
 
@@ -310,15 +378,24 @@ Separability Measures
    
    *Reference:* Cover, T. M., & Thomas, J. A. (2006). *Elements of Information Theory*. Wiley-Interscience.
 
-**Total Correlation**
-   Sum of absolute correlations between all feature pairs (excluding self-correlation). Indicates feature redundancy and multicollinearity in the dataset.
-   
+**Feature Correlation** (``mfe.cor``, ``mfe.nr_cor_attr``)
+   Feature redundancy and multicollinearity. ``mfe.cor.mean`` is the *mean* absolute
+   correlation over feature pairs and ``mfe.nr_cor_attr`` the proportion of pairs whose
+   absolute correlation exceeds 0.5:
+
    .. math::
-      
-      TC = \sum_{i \neq j} |\rho_{ij}|
-   
+
+      \overline{|\rho|} = \frac{2}{p(p-1)}\sum_{i < j} |\rho_{ij}|
+
    where :math:`\rho_{ij}` is the correlation between features :math:`i` and :math:`j`.
-   
+
+   .. note::
+
+      This replaces an earlier ``Total Correlations`` column that reported the
+      unnormalized :math:`\sum_{i \neq j} |\rho_{ij}|`. That sum grows with
+      :math:`p^2`, so it was dominated by the feature count and not comparable between
+      datasets of different widths -- which is exactly the comparison QSage makes.
+
    *Reference:* Watanabe, S. (1960). "Information theoretical analysis of multivariate correlation." *IBM Journal of Research and Development*, 4(1), 66-82.
 
 **Log Kernel Density**

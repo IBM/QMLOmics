@@ -9,7 +9,7 @@ from sklearn.svm import SVC
 # ====== Additional local imports ======
 from qbiocode.learning._grid import build_param_grid
 from qbiocode.learning._tuning import build_search_space, run_study
-from qbiocode.evaluation.model_evaluation import modeleval
+from qbiocode.evaluation.model_evaluation import extract_binary_scores, modeleval
 
 # ====== Scikit-learn imports ======
 
@@ -104,8 +104,23 @@ def compute_svc(
     model_params = model_fit.get_params()
     # Validate the model in test dataset and calculate accuracy
     y_predicted = svc.predict(X_test)
+    # `auc` is a ranking metric and is computed from these scores alone -- passing
+    # y_predicted, as this used to, silently reported balanced accuracy instead.
+    # OneVsOneClassifier publishes no predict_proba, so what comes back here is its
+    # decision_function; see extract_binary_scores for why that is a real ranking on a
+    # binary target, and None (recorded as NaN) when it is not. The `probability=True`
+    # above is what a reader would expect to supply this instead; OneVsOneClassifier
+    # discards it, which the decision_function route makes harmless rather than broken.
+    y_score = extract_binary_scores(svc, X_test)
     return modeleval(
-        y_test, y_predicted, beg_time, model_params, args, model=model, verbose=verbose
+        y_test,
+        y_predicted,
+        beg_time,
+        model_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
     )
 
 
@@ -189,4 +204,21 @@ def compute_svc_opt(
 
     # Make predictions and calculate accuracy
     y_predicted = best_svc.predict(X_test)
-    return modeleval(y_test, y_predicted, beg_time, best_params, args, model=model, verbose=verbose)
+    # Fitted unwrapped, but `probability` is not among the searched parameters, so this
+    # bare SVC has no predict_proba either and extract_binary_scores falls through to
+    # decision_function. `auc` is computed from these scores alone.
+    y_score = extract_binary_scores(best_svc, X_test)
+    return modeleval(
+        y_test,
+        y_predicted,
+        beg_time,
+        best_params,
+        args,
+        model=model,
+        verbose=verbose,
+        y_score=y_score,
+        # This function IS the tuned branch, so it states so rather than letting
+        # modeleval infer it from the label: a DIRECT call leaves `model` at its
+        # display-name default ('Decision Tree'), which carries no _opt marker.
+        tuned=True,
+    )
